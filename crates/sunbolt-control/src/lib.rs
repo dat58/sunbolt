@@ -25,6 +25,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use sunbolt_audit::{AuditEvent, AuditEventInput, AuditEventKind, AuditLog};
 use sunbolt_auth::{AuthError, AuthService, User, SESSION_COOKIE_NAME};
 use sunbolt_protocol::{
     TerminalClientMessage, TerminalError as ProtocolTerminalError, TerminalErrorCode, TerminalExit,
@@ -49,6 +50,8 @@ pub const TERMINAL_WS_PATH: &str = "/terminal/ws";
 pub const AUTH_LOGIN_PATH: &str = "/auth/login";
 pub const AUTH_LOGOUT_PATH: &str = "/auth/logout";
 pub const AUTH_ME_PATH: &str = "/auth/me";
+pub const ACCESS_HISTORY_PATH: &str = "/access/history";
+pub const AUDIT_LOGS_PATH: &str = "/audit/logs";
 
 /// Returns a stable name for the control plane component.
 #[must_use]
@@ -71,7 +74,12 @@ fn build_router(state: AppState) -> Router {
             AUTH_LOGOUT_PATH,
             post(auth_logout).layer(auth_layer.clone()),
         )
-        .route(AUTH_ME_PATH, get(auth_me).layer(auth_layer))
+        .route(AUTH_ME_PATH, get(auth_me).layer(auth_layer.clone()))
+        .route(
+            ACCESS_HISTORY_PATH,
+            get(access_history).layer(auth_layer.clone()),
+        )
+        .route(AUDIT_LOGS_PATH, get(audit_logs).layer(auth_layer))
         .with_state(state)
 }
 
@@ -80,6 +88,7 @@ struct AppState {
     sessions: TerminalSessionRegistry,
     terminal_config: TerminalSessionConfig,
     auth: AuthService,
+    audit: AuditLog,
 }
 
 impl AppState {
@@ -88,6 +97,7 @@ impl AppState {
             sessions: TerminalSessionRegistry::default(),
             terminal_config: TerminalSessionConfig::from_env(),
             auth: AuthService::from_env(),
+            audit: AuditLog::default(),
         }
     }
 }
@@ -223,6 +233,11 @@ struct CurrentUserResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct AuditEntriesResponse {
+    events: Vec<AuditEvent>,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: &'static str,
 }
@@ -236,6 +251,11 @@ async fn auth_login(
 ) -> impl IntoResponse {
     match state.auth.login(&request.email, &request.password) {
         Ok((user, session_token)) => {
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::UserLoginSuccess,
+                actor_email: Some(user.email.clone()),
+                message: "user authenticated".to_owned(),
+            });
             let mut response = Json(LoginResponse { user }).into_response();
             match HeaderValue::from_str(&state.auth.session_cookie_header(&session_token)) {
                 Ok(cookie) => {
@@ -251,12 +271,16 @@ async fn auth_login(
                     .into_response(),
             }
         }
-        Err(AuthError::InvalidCredentials) => (
-            StatusCode::UNAUTHORIZED,
+        Err(AuthError::InvalidCredentials) => (StatusCode::UNAUTHORIZED, {
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::UserLoginFailed,
+                actor_email: Some(request.email),
+                message: "login rejected".to_owned(),
+            });
             Json(ErrorResponse {
                 error: "invalid credentials",
-            }),
-        )
+            })
+        })
             .into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -276,6 +300,11 @@ async fn auth_logout(
     if let Some(token) = session_token_from_headers(&headers) {
         let _ = state.auth.logout(token);
     }
+    state.audit.record(AuditEventInput {
+        kind: AuditEventKind::UserLogout,
+        actor_email: Some(user.0.email.clone()),
+        message: "user logged out".to_owned(),
+    });
 
     let mut response = Json(CurrentUserResponse { user: user.0 }).into_response();
     if let Ok(cookie) = HeaderValue::from_str(&state.auth.clear_session_cookie_header()) {
@@ -286,6 +315,18 @@ async fn auth_logout(
 
 async fn auth_me(Extension(user): Extension<AuthenticatedUser>) -> impl IntoResponse {
     Json(CurrentUserResponse { user: user.0 })
+}
+
+async fn access_history(State(state): State<AppState>) -> impl IntoResponse {
+    Json(AuditEntriesResponse {
+        events: state.audit.access_history(),
+    })
+}
+
+async fn audit_logs(State(state): State<AppState>) -> impl IntoResponse {
+    Json(AuditEntriesResponse {
+        events: state.audit.events(),
+    })
 }
 
 async fn require_auth_middleware(
@@ -334,17 +375,25 @@ async fn terminal_websocket(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    if let Err(status) = authorize_terminal_request(&state.auth, &headers) {
-        return (
-            status,
-            Json(ErrorResponse {
-                error: "terminal websocket authorization failed",
-            }),
-        )
-            .into_response();
-    }
+    let user = match authorize_terminal_request(&state.auth, &headers) {
+        Ok(user) => user,
+        Err(status) => {
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::TerminalFailed,
+                actor_email: None,
+                message: "terminal websocket authorization failed".to_owned(),
+            });
+            return (
+                status,
+                Json(ErrorResponse {
+                    error: "terminal websocket authorization failed",
+                }),
+            )
+                .into_response();
+        }
+    };
 
-    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state))
+    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, user.email))
         .into_response()
 }
 
@@ -364,7 +413,7 @@ fn authorize_terminal_request(auth: &AuthService, headers: &HeaderMap) -> Result
 }
 
 #[allow(clippy::too_many_lines)]
-async fn handle_terminal_socket(mut socket: WebSocket, state: AppState) {
+async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_email: String) {
     let Some(start) = receive_start_message(&mut socket).await else {
         return;
     };
@@ -375,6 +424,11 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState) {
     let session = match LocalPtySession::spawn_default_shell(initial_size) {
         Ok(session) => Arc::new(session),
         Err(error) => {
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::TerminalFailed,
+                actor_email: Some(actor_email),
+                message: format!("terminal spawn failed: {error}"),
+            });
             let _ = send_server_message(
                 &mut socket,
                 TerminalServerMessage::Error {
@@ -392,6 +446,11 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState) {
         Arc::clone(&session),
         state.terminal_config.max_sessions,
     ) {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalFailed,
+            actor_email: Some(actor_email),
+            message: "maximum terminal session count reached".to_owned(),
+        });
         let _ = session.close();
         let _ = send_server_message(
             &mut socket,
@@ -418,9 +477,20 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState) {
     .await
     .is_err()
     {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalFailed,
+            actor_email: Some(actor_email),
+            message: "failed to send terminal started message".to_owned(),
+        });
         let _ = session.close();
         return;
     }
+
+    state.audit.record(AuditEventInput {
+        kind: AuditEventKind::TerminalOpened,
+        actor_email: Some(actor_email.clone()),
+        message: format!("terminal session {} opened", session_id.0),
+    });
 
     state
         .sessions
@@ -436,6 +506,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState) {
     });
 
     let mut idle_check = tokio::time::interval(IDLE_CHECK_INTERVAL);
+    let mut terminal_failed = false;
 
     loop {
         tokio::select! {
@@ -443,6 +514,14 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState) {
                 state.sessions.touch(&session_id);
                 if matches!(output, TerminalServerMessage::Exited { .. }) {
                     state.sessions.set_state(&session_id, TerminalSessionState::Closed);
+                }
+                if let TerminalServerMessage::Error { error, .. } = &output {
+                    terminal_failed = true;
+                    state.audit.record(AuditEventInput {
+                        kind: AuditEventKind::TerminalFailed,
+                        actor_email: Some(actor_email.clone()),
+                        message: format!("terminal stream error: {}", error.message),
+                    });
                 }
                 if send_split_server_message(&mut sender, output).await.is_err() {
                     break;
@@ -484,6 +563,14 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState) {
         .set_state(&session_id, TerminalSessionState::Closing);
     state.sessions.remove(&session_id);
     let _ = tokio::time::timeout(READ_SHUTDOWN_GRACE, output_reader).await;
+
+    if !terminal_failed {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalClosed,
+            actor_email: Some(actor_email),
+            message: format!("terminal session {} closed", session_id.0),
+        });
+    }
 }
 
 struct StartTerminal {
@@ -803,8 +890,8 @@ mod tests {
     use super::{
         authorize_terminal_request, build_router, component_name, exit_message,
         parse_client_message, terminal_size_from_protocol, AppState, TerminalSessionConfig,
-        TerminalSessionRegistry, AUTH_LOGIN_PATH, AUTH_ME_PATH, SESSION_COOKIE_NAME,
-        TERMINAL_WS_PATH,
+        TerminalSessionRegistry, ACCESS_HISTORY_PATH, AUDIT_LOGS_PATH, AUTH_LOGIN_PATH,
+        AUTH_LOGOUT_PATH, AUTH_ME_PATH, SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
@@ -1001,6 +1088,101 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn access_history_requires_authentication() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(ACCESS_HISTORY_PATH)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn audit_logs_capture_login_and_logout_events() {
+        let router = test_router();
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+
+        let _failed_login_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AUTH_LOGIN_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "admin@example.com",
+                            "password": "wrong-password"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        let _logout_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AUTH_LOGOUT_PATH)
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        let fresh_cookie =
+            login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+        let logs_response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(AUDIT_LOGS_PATH)
+                    .header(header::COOKIE, fresh_cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(logs_response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(logs_response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        let events = payload["events"]
+            .as_array()
+            .expect("events should be a list");
+        assert!(
+            events
+                .iter()
+                .any(|event| event["kind"] == json!("UserLoginSuccess")),
+            "expected login success event"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event["kind"] == json!("UserLoginFailed")),
+            "expected login failed event"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event["kind"] == json!("UserLogout")),
+            "expected logout event"
+        );
+    }
+
     #[test]
     fn viewer_cannot_open_terminal() {
         let auth = test_auth_service();
@@ -1053,6 +1235,7 @@ mod tests {
             sessions: TerminalSessionRegistry::default(),
             terminal_config: TerminalSessionConfig::from_env(),
             auth,
+            audit: sunbolt_audit::AuditLog::default(),
         })
     }
 
@@ -1077,5 +1260,38 @@ mod tests {
         )
         .expect("viewer should be created");
         auth
+    }
+
+    async fn login_and_get_cookie(router: &axum::Router, email: &str, password: &str) -> String {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AUTH_LOGIN_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": email,
+                            "password": password
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        response
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("set-cookie should be present")
+            .to_str()
+            .expect("cookie should be utf-8")
+            .split(';')
+            .next()
+            .expect("cookie should contain a token")
+            .to_owned()
     }
 }

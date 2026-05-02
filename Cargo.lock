@@ -2293,6 +2293,9 @@ dependencies = [
 [[package]]
 name = "sunbolt-audit"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "sunbolt-auth"
@@ -2316,6 +2319,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "sunbolt-audit",
  "sunbolt-auth",
  "sunbolt-common",
  "sunbolt-protocol",

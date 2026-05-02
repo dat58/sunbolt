@@ -179,15 +179,15 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Audit Logs
 
-- [ ] Implement audit event writer.
-- [ ] Record login success.
-- [ ] Record login failure.
-- [ ] Record logout.
-- [ ] Record terminal opened.
-- [ ] Record terminal closed.
-- [ ] Record terminal failed.
-- [ ] Add access history page.
-- [ ] Add audit log page placeholder.
+- [x] Implement audit event writer.
+- [x] Record login success.
+- [x] Record login failure.
+- [x] Record logout.
+- [x] Record terminal opened.
+- [x] Record terminal closed.
+- [x] Record terminal failed.
+- [x] Add access history page.
+- [x] Add audit log page placeholder.
 
 ---
 
