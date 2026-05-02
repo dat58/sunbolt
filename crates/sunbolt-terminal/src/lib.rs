@@ -71,7 +71,7 @@ pub enum TerminalError {
 
 /// Local PTY session for a shell running on the same host as Sunbolt.
 pub struct LocalPtySession {
-    master: Box<dyn MasterPty + Send>,
+    master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
     reader: Mutex<Box<dyn Read + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -125,7 +125,7 @@ impl LocalPtySession {
             .map_err(TerminalError::TakeWriter)?;
 
         Ok(Self {
-            master: pair.master,
+            master: Mutex::new(pair.master),
             child: Mutex::new(Some(child)),
             reader: Mutex::new(reader),
             writer: Mutex::new(writer),
@@ -182,6 +182,8 @@ impl LocalPtySession {
         }
 
         self.master
+            .lock()
+            .map_err(|_| TerminalError::LockPoisoned("master"))?
             .resize(size.into())
             .map_err(TerminalError::Resize)
     }

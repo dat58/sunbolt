@@ -1,12 +1,21 @@
 [package]
 name = "sunbolt-control"
-description = "Sunbolt control plane skeleton."
+description = "Sunbolt control plane."
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
+axum = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
 sunbolt-common = { path = "../sunbolt-common" }
+sunbolt-protocol = { path = "../sunbolt-protocol" }
+sunbolt-terminal = { path = "../sunbolt-terminal" }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
 
 [lib]
 path = "src/lib.rs"

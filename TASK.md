@@ -99,7 +99,7 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## WebSocket Terminal Stream
 
-- [ ] Add WebSocket endpoint for terminal connections.
+- [x] Add WebSocket endpoint for terminal connections.
 - [x] Define browser-to-server terminal messages:
   - [x] `Start`
   - [x] `Input`
@@ -112,10 +112,10 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
   - [x] `Exited`
   - [x] `Error`
   - [x] `Pong`
-- [ ] Implement terminal input forwarding.
-- [ ] Implement terminal output forwarding.
-- [ ] Handle browser disconnect.
-- [ ] Handle backend PTY failure.
+- [x] Implement terminal input forwarding.
+- [x] Implement terminal output forwarding.
+- [x] Handle browser disconnect.
+- [x] Handle backend PTY failure.
 - [ ] Add backpressure strategy or document temporary behavior.
 
 ## Terminal UI
