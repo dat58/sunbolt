@@ -80,7 +80,7 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Terminal Backend
 
-- [ ] Choose PTY crate for local terminal spawning.
+- [x] Choose PTY crate for local terminal spawning.
 - [x] Implement `TerminalSessionId` type.
 - [ ] Implement terminal session states:
   - [ ] `Created`
@@ -89,11 +89,11 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
   - [ ] `Closing`
   - [ ] `Closed`
   - [ ] `Failed`
-- [ ] Implement local PTY spawn.
-- [ ] Implement terminal input write.
-- [ ] Implement terminal output read.
-- [ ] Implement terminal resize.
-- [ ] Implement terminal close.
+- [x] Implement local PTY spawn.
+- [x] Implement terminal input write.
+- [x] Implement terminal output read.
+- [x] Implement terminal resize.
+- [x] Implement terminal close.
 - [ ] Implement terminal process exit handling.
 - [ ] Add unit tests for session state transitions.
 

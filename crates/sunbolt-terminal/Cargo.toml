@@ -1,9 +1,14 @@
 [package]
 name = "sunbolt-terminal"
-description = "Sunbolt terminal core skeleton."
+description = "Sunbolt terminal core."
 edition.workspace = true
 license.workspace = true
 version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+portable-pty = { workspace = true }
+thiserror = { workspace = true }
 
 [lib]
 path = "src/lib.rs"
