@@ -7,9 +7,15 @@ version.workspace = true
 
 [dependencies]
 sunbolt-common = { path = "../sunbolt-common" }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "sunbolt-agent"
+path = "src/main.rs"
 
 [lints]
 workspace = true

@@ -195,15 +195,15 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Agent Binary
 
-- [ ] Create `crates/sunbolt-agent`.
-- [ ] Add agent config loading.
-- [ ] Add agent startup logs.
-- [ ] Add agent local node information collection:
-  - [ ] hostname
-  - [ ] OS
-  - [ ] architecture
-  - [ ] agent version
-- [ ] Add graceful shutdown.
+- [x] Create `crates/sunbolt-agent`.
+- [x] Add agent config loading.
+- [x] Add agent startup logs.
+- [x] Add agent local node information collection:
+  - [x] hostname
+  - [x] OS
+  - [x] architecture
+  - [x] agent version
+- [x] Add graceful shutdown.
 
 ## Node Enrollment
 
