@@ -2297,6 +2297,12 @@ version = "0.1.0"
 [[package]]
 name = "sunbolt-auth"
 version = "0.1.0"
+dependencies = [
+ "rand 0.8.6",
+ "serde",
+ "sha2",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "sunbolt-common"
@@ -2308,7 +2314,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
+ "serde",
  "serde_json",
+ "sunbolt-auth",
  "sunbolt-common",
  "sunbolt-protocol",
  "sunbolt-terminal",

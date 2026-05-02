@@ -1,3 +1,303 @@
+use std::{
+    collections::HashMap,
+    env,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+const DEFAULT_SESSION_TTL_SECS: u64 = 8 * 60 * 60;
+const DEFAULT_ADMIN_EMAIL: &str = "admin@sunbolt.local";
+const DEFAULT_ADMIN_PASSWORD: &str = "sunbolt-dev-admin";
+
+/// Session cookie used by Sunbolt HTTP and WebSocket authentication.
+pub const SESSION_COOKIE_NAME: &str = "sunbolt_session";
+
+/// Authentication and authorization service configuration.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AuthConfig {
+    pub session_ttl: Duration,
+    pub secure_cookie: bool,
+    pub bootstrap_admin: bool,
+    pub admin_email: String,
+    pub admin_password: String,
+}
+
+impl AuthConfig {
+    /// Loads authentication configuration from environment variables.
+    #[must_use]
+    pub fn from_env() -> Self {
+        let session_ttl = Duration::from_secs(
+            env_u64("SUNBOLT_SESSION_TTL_SECS").unwrap_or(DEFAULT_SESSION_TTL_SECS),
+        );
+        let secure_cookie = env_bool("SUNBOLT_COOKIE_SECURE").unwrap_or(false);
+        let bootstrap_admin = env_bool("SUNBOLT_DEV_BOOTSTRAP_ADMIN").unwrap_or(true);
+        let admin_email = env::var("SUNBOLT_DEV_ADMIN_EMAIL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_ADMIN_EMAIL.to_owned());
+        let admin_password = env::var("SUNBOLT_DEV_ADMIN_PASSWORD")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_ADMIN_PASSWORD.to_owned());
+
+        Self {
+            session_ttl,
+            secure_cookie,
+            bootstrap_admin,
+            admin_email,
+            admin_password,
+        }
+    }
+}
+
+/// Simple user role model for MVP authorization.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserRole {
+    Admin,
+    Operator,
+    Viewer,
+}
+
+/// User model returned by auth APIs.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct User {
+    pub id: u64,
+    pub email: String,
+    pub role: UserRole,
+}
+
+#[derive(Debug, Clone)]
+struct StoredUser {
+    user: User,
+    password_hash: String,
+}
+
+#[derive(Debug, Clone)]
+struct SessionRecord {
+    user_id: u64,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Default)]
+struct AuthStore {
+    users_by_id: HashMap<u64, StoredUser>,
+    user_ids_by_email: HashMap<String, u64>,
+    sessions_by_token: HashMap<String, SessionRecord>,
+}
+
+/// In-memory authentication service used for Phase 2 development flow.
+#[derive(Debug, Clone)]
+pub struct AuthService {
+    store: Arc<Mutex<AuthStore>>,
+    next_user_id: Arc<AtomicU64>,
+    config: AuthConfig,
+}
+
+impl AuthService {
+    /// Creates an auth service and optionally bootstraps a dev admin account.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self::new(AuthConfig::from_env())
+    }
+
+    /// Creates an auth service from an explicit configuration.
+    #[must_use]
+    pub fn new(config: AuthConfig) -> Self {
+        let service = Self {
+            store: Arc::new(Mutex::new(AuthStore::default())),
+            next_user_id: Arc::new(AtomicU64::new(1)),
+            config,
+        };
+        if service.config.bootstrap_admin {
+            let _ = service.bootstrap_admin();
+        }
+        service
+    }
+
+    /// Creates or updates the development bootstrap admin account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the auth store is unavailable or the configured
+    /// bootstrap credentials are invalid.
+    pub fn bootstrap_admin(&self) -> Result<User, AuthError> {
+        self.upsert_user(
+            &self.config.admin_email,
+            &self.config.admin_password,
+            UserRole::Admin,
+        )
+    }
+
+    /// Adds or updates a user account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when credentials are invalid or the auth store cannot
+    /// be accessed.
+    pub fn upsert_user(
+        &self,
+        email: &str,
+        password: &str,
+        role: UserRole,
+    ) -> Result<User, AuthError> {
+        if email.trim().is_empty() {
+            return Err(AuthError::InvalidCredentials);
+        }
+        if password.is_empty() {
+            return Err(AuthError::InvalidCredentials);
+        }
+
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("users"))?;
+        let normalized_email = normalize_email(email);
+        let password_hash = password_hash(password);
+
+        if let Some(user_id) = store.user_ids_by_email.get(&normalized_email).copied() {
+            let stored_user = store
+                .users_by_id
+                .get_mut(&user_id)
+                .ok_or(AuthError::StoreUnavailable("user-record"))?;
+            stored_user.user.role = role;
+            stored_user.password_hash = password_hash;
+            return Ok(stored_user.user.clone());
+        }
+
+        let user = User {
+            id: self.next_user_id.fetch_add(1, Ordering::Relaxed),
+            email: normalized_email.clone(),
+            role,
+        };
+        store.user_ids_by_email.insert(normalized_email, user.id);
+        store.users_by_id.insert(
+            user.id,
+            StoredUser {
+                user: user.clone(),
+                password_hash,
+            },
+        );
+        Ok(user)
+    }
+
+    /// Authenticates a user and returns a session token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when credentials are invalid or session state cannot
+    /// be accessed.
+    pub fn login(&self, email: &str, password: &str) -> Result<(User, String), AuthError> {
+        let normalized_email = normalize_email(email);
+        let now = Instant::now();
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("sessions"))?;
+
+        let Some(user_id) = store.user_ids_by_email.get(&normalized_email).copied() else {
+            return Err(AuthError::InvalidCredentials);
+        };
+        let Some(stored_user) = store.users_by_id.get(&user_id) else {
+            return Err(AuthError::InvalidCredentials);
+        };
+        let user = stored_user.user.clone();
+        if stored_user.password_hash != password_hash(password) {
+            return Err(AuthError::InvalidCredentials);
+        }
+
+        let token = random_token();
+        store.sessions_by_token.insert(
+            token.clone(),
+            SessionRecord {
+                user_id: user.id,
+                expires_at: now + self.config.session_ttl,
+            },
+        );
+        Ok((user, token))
+    }
+
+    /// Returns the current user for a session token when valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when session state cannot be accessed.
+    pub fn current_user(&self, token: &str) -> Result<Option<User>, AuthError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("sessions"))?;
+        Self::purge_expired_sessions_locked(&mut store);
+
+        let Some(session) = store.sessions_by_token.get(token) else {
+            return Ok(None);
+        };
+        Ok(store
+            .users_by_id
+            .get(&session.user_id)
+            .map(|user| user.user.clone()))
+    }
+
+    /// Removes an active session token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when session state cannot be accessed.
+    pub fn logout(&self, token: &str) -> Result<(), AuthError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("sessions"))?;
+        store.sessions_by_token.remove(token);
+        Ok(())
+    }
+
+    /// Returns true when a user can open terminal sessions.
+    #[must_use]
+    pub fn can_open_terminal(&self, user: &User) -> bool {
+        matches!(user.role, UserRole::Admin | UserRole::Operator)
+    }
+
+    /// Builds a `Set-Cookie` header value for an authenticated session.
+    #[must_use]
+    pub fn session_cookie_header(&self, token: &str) -> String {
+        let max_age = self.config.session_ttl.as_secs();
+        let mut cookie = format!(
+            "{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Strict"
+        );
+        if self.config.secure_cookie {
+            cookie.push_str("; Secure");
+        }
+        cookie
+    }
+
+    /// Builds a `Set-Cookie` header value that clears the auth session.
+    #[must_use]
+    pub fn clear_session_cookie_header(&self) -> String {
+        let mut cookie =
+            format!("{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict");
+        if self.config.secure_cookie {
+            cookie.push_str("; Secure");
+        }
+        cookie
+    }
+
+    fn purge_expired_sessions_locked(store: &mut AuthStore) {
+        let now = Instant::now();
+        store
+            .sessions_by_token
+            .retain(|_, session| session.expires_at > now);
+    }
+}
+
 /// Permission identifiers are resource-oriented strings.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Permission(&'static str);
@@ -13,12 +313,124 @@ impl Permission {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum AuthError {
+    #[error("invalid credentials")]
+    InvalidCredentials,
+    #[error("internal auth store is unavailable: {0}")]
+    StoreUnavailable(&'static str),
+}
+
+fn normalize_email(email: &str) -> String {
+    email.trim().to_ascii_lowercase()
+}
+
+fn password_hash(password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"sunbolt-dev-v1:");
+    hasher.update(password.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn random_token() -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    token
+}
+
+fn env_u64(name: &str) -> Option<u64> {
+    env::var(name).ok()?.parse().ok()
+}
+
+fn env_bool(name: &str) -> Option<bool> {
+    let value = env::var(name).ok()?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Permission;
+    use super::{AuthConfig, AuthService, Permission, UserRole, DEFAULT_SESSION_TTL_SECS};
+    use std::time::Duration;
 
     #[test]
-    fn terminal_open_permission_is_resource_oriented() {
+    fn bootstrap_admin_can_login() {
+        let config = AuthConfig {
+            session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            secure_cookie: false,
+            bootstrap_admin: true,
+            admin_email: "admin@example.com".to_owned(),
+            admin_password: "password123".to_owned(),
+        };
+        let auth = AuthService::new(config);
+        let (user, token) = auth
+            .login("admin@example.com", "password123")
+            .expect("admin login should work");
+
+        assert_eq!(user.role, UserRole::Admin);
+        assert_eq!(
+            auth.current_user(&token)
+                .expect("session should be readable")
+                .expect("session should exist")
+                .email,
+            "admin@example.com"
+        );
+    }
+
+    #[test]
+    fn logout_invalidates_session() {
+        let config = AuthConfig {
+            session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            secure_cookie: false,
+            bootstrap_admin: true,
+            admin_email: "admin@example.com".to_owned(),
+            admin_password: "password123".to_owned(),
+        };
+        let auth = AuthService::new(config);
+        let (_, token) = auth
+            .login("admin@example.com", "password123")
+            .expect("admin login should work");
+
+        auth.logout(&token).expect("logout should succeed");
+        assert!(auth
+            .current_user(&token)
+            .expect("session should be readable")
+            .is_none());
+    }
+
+    #[test]
+    fn role_checks_gate_terminal_access() {
+        let config = AuthConfig {
+            session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            secure_cookie: false,
+            bootstrap_admin: false,
+            admin_email: "ignore@example.com".to_owned(),
+            admin_password: "ignore".to_owned(),
+        };
+        let auth = AuthService::new(config);
+        let admin = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+        let operator = auth
+            .upsert_user("operator@example.com", "pass", UserRole::Operator)
+            .expect("operator should upsert");
+        let viewer = auth
+            .upsert_user("viewer@example.com", "pass", UserRole::Viewer)
+            .expect("viewer should upsert");
+
+        assert!(auth.can_open_terminal(&admin));
+        assert!(auth.can_open_terminal(&operator));
+        assert!(!auth.can_open_terminal(&viewer));
         assert_eq!(Permission::TERMINAL_OPEN.as_str(), "terminal.open");
     }
 }

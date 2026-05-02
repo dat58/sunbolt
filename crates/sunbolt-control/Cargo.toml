@@ -8,7 +8,9 @@ version.workspace = true
 [dependencies]
 axum = { workspace = true }
 futures-util = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+sunbolt-auth = { path = "../sunbolt-auth" }
 sunbolt-common = { path = "../sunbolt-common" }
 sunbolt-protocol = { path = "../sunbolt-protocol" }
 sunbolt-terminal = { path = "../sunbolt-terminal" }

@@ -158,24 +158,24 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Authentication
 
-- [ ] Add user model.
-- [ ] Add dev-only bootstrap admin creation.
-- [ ] Add login endpoint.
-- [ ] Add logout endpoint.
-- [ ] Add secure session cookie.
-- [ ] Add current-user endpoint.
-- [ ] Add auth middleware.
-- [ ] Protect terminal WebSocket endpoint with auth.
+- [x] Add user model.
+- [x] Add dev-only bootstrap admin creation.
+- [x] Add login endpoint.
+- [x] Add logout endpoint.
+- [x] Add secure session cookie.
+- [x] Add current-user endpoint.
+- [x] Add auth middleware.
+- [x] Protect terminal WebSocket endpoint with auth.
 
 ## Authorization
 
-- [ ] Add simple role enum for MVP:
-  - [ ] `Admin`
-  - [ ] `Operator`
-  - [ ] `Viewer`
-- [ ] Require `Admin` or `Operator` to open terminal.
-- [ ] Prevent `Viewer` from opening terminal.
-- [ ] Add server-side authorization tests.
+- [x] Add simple role enum for MVP:
+  - [x] `Admin`
+  - [x] `Operator`
+  - [x] `Viewer`
+- [x] Require `Admin` or `Operator` to open terminal.
+- [x] Prevent `Viewer` from opening terminal.
+- [x] Add server-side authorization tests.
 
 ## Audit Logs
 
