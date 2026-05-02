@@ -1,9 +1,15 @@
 [package]
 name = "sunbolt-protocol"
-description = "Sunbolt node protocol skeleton."
+description = "Sunbolt protocol types."
 edition.workspace = true
 license.workspace = true
 version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lib]
 path = "src/lib.rs"

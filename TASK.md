@@ -81,7 +81,7 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 ## Terminal Backend
 
 - [ ] Choose PTY crate for local terminal spawning.
-- [ ] Implement `TerminalSessionId` type.
+- [x] Implement `TerminalSessionId` type.
 - [ ] Implement terminal session states:
   - [ ] `Created`
   - [ ] `Starting`
@@ -100,18 +100,18 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 ## WebSocket Terminal Stream
 
 - [ ] Add WebSocket endpoint for terminal connections.
-- [ ] Define browser-to-server terminal messages:
-  - [ ] `Start`
-  - [ ] `Input`
-  - [ ] `Resize`
-  - [ ] `Close`
-  - [ ] `Ping`
-- [ ] Define server-to-browser terminal messages:
-  - [ ] `Started`
-  - [ ] `Output`
-  - [ ] `Exited`
-  - [ ] `Error`
-  - [ ] `Pong`
+- [x] Define browser-to-server terminal messages:
+  - [x] `Start`
+  - [x] `Input`
+  - [x] `Resize`
+  - [x] `Close`
+  - [x] `Ping`
+- [x] Define server-to-browser terminal messages:
+  - [x] `Started`
+  - [x] `Output`
+  - [x] `Exited`
+  - [x] `Error`
+  - [x] `Pong`
 - [ ] Implement terminal input forwarding.
 - [ ] Implement terminal output forwarding.
 - [ ] Handle browser disconnect.
