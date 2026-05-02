@@ -20,6 +20,7 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = "1.0"
 axum = { version = "0.7", features = ["ws"] }
+dioxus = { version = "0.7.6", default-features = false, features = ["minimal"] }
 futures-util = "0.3"
 portable-pty = "0.9"
 serde = { version = "1.0", features = ["derive"] }

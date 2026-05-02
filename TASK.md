@@ -120,12 +120,12 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Terminal UI
 
-- [ ] Integrate xterm.js or chosen terminal emulator.
-- [ ] Create Dioxus terminal component wrapper.
-- [ ] Connect terminal input to WebSocket.
-- [ ] Render terminal output from WebSocket.
-- [ ] Send resize events to backend.
-- [ ] Add terminal connection status indicator.
+- [x] Integrate xterm.js or chosen terminal emulator.
+- [x] Create Dioxus terminal component wrapper.
+- [x] Connect terminal input to WebSocket.
+- [x] Render terminal output from WebSocket.
+- [x] Send resize events to backend.
+- [x] Add terminal connection status indicator.
 - [ ] Add close terminal button.
 - [ ] Add reconnect placeholder UI.
 - [ ] Test on desktop browser.

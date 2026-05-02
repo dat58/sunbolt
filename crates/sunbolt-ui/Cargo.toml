@@ -1,12 +1,14 @@
 [package]
 name = "sunbolt-ui"
-description = "Sunbolt web UI skeleton."
+description = "Sunbolt web UI."
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
+dioxus = { workspace = true }
 sunbolt-common = { path = "../sunbolt-common" }
+sunbolt-protocol = { path = "../sunbolt-protocol" }
 
 [lib]
 path = "src/lib.rs"
