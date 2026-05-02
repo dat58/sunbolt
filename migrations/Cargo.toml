@@ -1,0 +1,16 @@
+[package]
+name = "sunbolt-migration"
+description = "Sunbolt SeaORM migrations."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+name = "sunbolt_migration"
+path = "src/lib.rs"
+
+[dependencies]
+sea-orm-migration = { workspace = true }
+
+[lints]
+workspace = true

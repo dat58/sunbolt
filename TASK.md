@@ -147,14 +147,14 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Database
 
-- [ ] Add PostgreSQL config.
-- [ ] Add SeaORM dependency.
-- [ ] Add migration setup.
-- [ ] Create `users` table.
-- [ ] Create `sessions` table.
-- [ ] Create `terminal_sessions` table.
-- [ ] Create `audit_logs` table.
-- [ ] Add storage crate APIs.
+- [x] Add PostgreSQL config.
+- [x] Add SeaORM dependency.
+- [x] Add migration setup.
+- [x] Create `users` table.
+- [x] Create `sessions` table.
+- [x] Create `terminal_sessions` table.
+- [x] Create `audit_logs` table.
+- [x] Add storage crate APIs.
 
 ## Authentication
 
