@@ -71,6 +71,15 @@ pub fn App() -> Element {
                             "Access History"
                         }
                         button {
+                            class: if page() == ShellPage::Nodes {
+                                NAV_BUTTON_ACTIVE_CLASS
+                            } else {
+                                NAV_BUTTON_CLASS
+                            },
+                            onclick: move |_| page.set(ShellPage::Nodes),
+                            "Nodes"
+                        }
+                        button {
                             class: if page() == ShellPage::AuditLogs {
                                 NAV_BUTTON_ACTIVE_CLASS
                             } else {
@@ -84,6 +93,7 @@ pub fn App() -> Element {
                 match page() {
                     ShellPage::Terminal => rsx! { TerminalPageBody {} },
                     ShellPage::AccessHistory => rsx! { AccessHistoryPage {} },
+                    ShellPage::Nodes => rsx! { NodesPage {} },
                     ShellPage::AuditLogs => rsx! { AuditLogPage {} },
                 }
             }
@@ -111,6 +121,7 @@ pub fn App() -> Element {
 enum ShellPage {
     Terminal,
     AccessHistory,
+    Nodes,
     AuditLogs,
 }
 
@@ -216,6 +227,49 @@ pub fn AuditLogPage() -> Element {
                             td { class: "p-2 text-terminal-text", "terminal.opened" }
                             td { class: "p-2 text-terminal-text", "admin@example.com" }
                             td { class: "p-2 text-terminal-muted", "Awaiting backend list wiring" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+pub fn NodesPage() -> Element {
+    rsx! {
+        section {
+            class: "grid gap-4 p-4",
+            div {
+                class: "border border-terminal-border bg-terminal-surface p-4",
+                h2 {
+                    class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
+                    "Node Enrollment"
+                }
+                pre {
+                    class: "m-0 overflow-auto border border-terminal-border bg-terminal-bg p-3 font-mono text-xs text-lightning-cyan",
+                    "SUNBOLT_CONTROL_PLANE_URL=http://127.0.0.1:3000 SUNBOLT_AGENT_ENROLLMENT_TOKEN=<token> cargo run -p sunbolt-agent"
+                }
+            }
+            div {
+                class: "overflow-auto border border-terminal-border",
+                table {
+                    class: "w-full border-collapse text-sm",
+                    thead {
+                        class: "bg-terminal-surface text-terminal-muted",
+                        tr {
+                            th { class: "p-2 text-left font-medium", "Node" }
+                            th { class: "p-2 text-left font-medium", "Hostname" }
+                            th { class: "p-2 text-left font-medium", "OS" }
+                            th { class: "p-2 text-left font-medium", "Status" }
+                        }
+                    }
+                    tbody {
+                        tr {
+                            td { class: "p-2 text-terminal-muted", "Pending" }
+                            td { class: "p-2 text-terminal-text", "host-a" }
+                            td { class: "p-2 text-terminal-text", "linux" }
+                            td { class: "p-2 text-lightning-cyan", "enrolled" }
                         }
                     }
                 }

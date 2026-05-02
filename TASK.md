@@ -207,15 +207,15 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Node Enrollment
 
-- [ ] Add `nodes` table.
-- [ ] Add `node_credentials` table.
-- [ ] Add `node_heartbeats` table.
-- [ ] Add `enrollment_tokens` table.
-- [ ] Add create enrollment token endpoint.
-- [ ] Add enrollment command UI.
-- [ ] Add agent enrollment request.
-- [ ] Mark enrollment token as used.
-- [ ] Store node identity.
+- [x] Add `nodes` table.
+- [x] Add `node_credentials` table.
+- [x] Add `node_heartbeats` table.
+- [x] Add `enrollment_tokens` table.
+- [x] Add create enrollment token endpoint.
+- [x] Add enrollment command UI.
+- [x] Add agent enrollment request.
+- [x] Mark enrollment token as used.
+- [x] Store node identity.
 
 ## Agent Connection
 

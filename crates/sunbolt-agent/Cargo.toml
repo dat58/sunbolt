@@ -6,6 +6,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+serde = { workspace = true }
 sunbolt-common = { path = "../sunbolt-common" }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["signal"] }

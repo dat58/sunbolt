@@ -4,6 +4,10 @@ mod m20260502_000001_create_users_table;
 mod m20260502_000002_create_sessions_table;
 mod m20260502_000003_create_terminal_sessions_table;
 mod m20260502_000004_create_audit_logs_table;
+mod m20260502_000005_create_nodes_table;
+mod m20260502_000006_create_node_credentials_table;
+mod m20260502_000007_create_node_heartbeats_table;
+mod m20260502_000008_create_enrollment_tokens_table;
 
 pub struct Migrator;
 
@@ -15,6 +19,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20260502_000002_create_sessions_table::Migration),
             Box::new(m20260502_000003_create_terminal_sessions_table::Migration),
             Box::new(m20260502_000004_create_audit_logs_table::Migration),
+            Box::new(m20260502_000005_create_nodes_table::Migration),
+            Box::new(m20260502_000006_create_node_credentials_table::Migration),
+            Box::new(m20260502_000007_create_node_heartbeats_table::Migration),
+            Box::new(m20260502_000008_create_enrollment_tokens_table::Migration),
         ]
     }
 }

@@ -1,5 +1,6 @@
 use std::{env, future::Future};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const DEFAULT_CONTROL_PLANE_URL: &str = "http://127.0.0.1:3000";
@@ -50,12 +51,54 @@ impl AgentConfig {
 }
 
 /// Local node information reported by the agent.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LocalNodeInfo {
     pub hostname: String,
     pub os: String,
     pub architecture: String,
     pub agent_version: String,
+}
+
+/// Agent enrollment request sent to the control plane.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentEnrollmentRequest {
+    pub token: String,
+    pub node_name: String,
+    pub hostname: String,
+    pub os: String,
+    pub architecture: String,
+    pub agent_version: String,
+}
+
+impl AgentEnrollmentRequest {
+    /// Builds an enrollment request from agent config and local node data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the agent has no enrollment token configured.
+    pub fn from_config(
+        config: &AgentConfig,
+        node_info: &LocalNodeInfo,
+    ) -> Result<Self, AgentError> {
+        let token = config
+            .enrollment_token
+            .clone()
+            .ok_or(AgentError::MissingEnrollmentToken)?;
+
+        Ok(Self {
+            token,
+            node_name: config.node_name.clone(),
+            hostname: node_info.hostname.clone(),
+            os: node_info.os.clone(),
+            architecture: node_info.architecture.clone(),
+            agent_version: node_info.agent_version.clone(),
+        })
+    }
+
+    #[must_use]
+    pub const fn endpoint_path() -> &'static str {
+        "/agent/enroll"
+    }
 }
 
 impl LocalNodeInfo {
@@ -152,7 +195,10 @@ impl AgentRuntime {
 }
 
 #[derive(Debug, Error)]
-pub enum AgentError {}
+pub enum AgentError {
+    #[error("agent enrollment token is not configured")]
+    MissingEnrollmentToken,
+}
 
 fn default_node_name(lookup: &mut impl FnMut(&str) -> Option<String>) -> String {
     hostname_from_lookup(lookup)
@@ -172,7 +218,7 @@ fn hostname_from_lookup(lookup: &mut impl FnMut(&str) -> Option<String>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        component_name, AgentConfig, AgentRuntime, LocalNodeInfo, LogLevel,
+        component_name, AgentConfig, AgentEnrollmentRequest, AgentRuntime, LocalNodeInfo, LogLevel,
         DEFAULT_CONTROL_PLANE_URL,
     };
     use tokio::sync::oneshot;
@@ -216,6 +262,52 @@ mod tests {
         assert!(!info.os.is_empty());
         assert!(!info.architecture.is_empty());
         assert_eq!(info.agent_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn enrollment_request_uses_config_token_and_node_info() {
+        let request = AgentEnrollmentRequest::from_config(
+            &AgentConfig {
+                control_plane_url: "https://control.example.test".to_owned(),
+                node_name: "node-a".to_owned(),
+                enrollment_token: Some("token-1".to_owned()),
+            },
+            &LocalNodeInfo {
+                hostname: "host-a".to_owned(),
+                os: "linux".to_owned(),
+                architecture: "x86_64".to_owned(),
+                agent_version: "0.1.0".to_owned(),
+            },
+        )
+        .expect("request should build");
+
+        assert_eq!(request.token, "token-1");
+        assert_eq!(request.node_name, "node-a");
+        assert_eq!(request.hostname, "host-a");
+        assert_eq!(AgentEnrollmentRequest::endpoint_path(), "/agent/enroll");
+    }
+
+    #[test]
+    fn enrollment_request_requires_token() {
+        let error = AgentEnrollmentRequest::from_config(
+            &AgentConfig {
+                control_plane_url: "https://control.example.test".to_owned(),
+                node_name: "node-a".to_owned(),
+                enrollment_token: None,
+            },
+            &LocalNodeInfo {
+                hostname: "host-a".to_owned(),
+                os: "linux".to_owned(),
+                architecture: "x86_64".to_owned(),
+                agent_version: "0.1.0".to_owned(),
+            },
+        )
+        .expect_err("missing token should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "agent enrollment token is not configured"
+        );
     }
 
     #[test]

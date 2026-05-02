@@ -17,6 +17,7 @@ pub enum AuditEventKind {
     TerminalOpened,
     TerminalClosed,
     TerminalFailed,
+    NodeEnrolled,
 }
 
 impl AuditEventKind {
@@ -30,6 +31,7 @@ impl AuditEventKind {
             Self::TerminalOpened => "terminal.opened",
             Self::TerminalClosed => "terminal.closed",
             Self::TerminalFailed => "terminal.failed",
+            Self::NodeEnrolled => "node.enrolled",
         }
     }
 
@@ -140,6 +142,7 @@ mod tests {
         assert_eq!(AuditEventKind::TerminalOpened.as_str(), "terminal.opened");
         assert_eq!(AuditEventKind::TerminalClosed.as_str(), "terminal.closed");
         assert_eq!(AuditEventKind::TerminalFailed.as_str(), "terminal.failed");
+        assert_eq!(AuditEventKind::NodeEnrolled.as_str(), "node.enrolled");
     }
 
     #[test]

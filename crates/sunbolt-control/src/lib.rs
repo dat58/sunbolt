@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     env,
+    hash::{Hash, Hasher},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -24,6 +25,7 @@ use axum::{
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sunbolt_audit::{AuditEvent, AuditEventInput, AuditEventKind, AuditLog};
 use sunbolt_auth::{AuthError, AuthService, User, SESSION_COOKIE_NAME};
@@ -52,6 +54,8 @@ pub const AUTH_LOGOUT_PATH: &str = "/auth/logout";
 pub const AUTH_ME_PATH: &str = "/auth/me";
 pub const ACCESS_HISTORY_PATH: &str = "/access/history";
 pub const AUDIT_LOGS_PATH: &str = "/audit/logs";
+pub const ENROLLMENT_TOKENS_PATH: &str = "/nodes/enrollment-tokens";
+pub const AGENT_ENROLL_PATH: &str = "/agent/enroll";
 
 /// Returns a stable name for the control plane component.
 #[must_use]
@@ -79,7 +83,12 @@ fn build_router(state: AppState) -> Router {
             ACCESS_HISTORY_PATH,
             get(access_history).layer(auth_layer.clone()),
         )
-        .route(AUDIT_LOGS_PATH, get(audit_logs).layer(auth_layer))
+        .route(AUDIT_LOGS_PATH, get(audit_logs).layer(auth_layer.clone()))
+        .route(
+            ENROLLMENT_TOKENS_PATH,
+            post(create_enrollment_token).layer(auth_layer),
+        )
+        .route(AGENT_ENROLL_PATH, post(agent_enroll))
         .with_state(state)
 }
 
@@ -89,6 +98,7 @@ struct AppState {
     terminal_config: TerminalSessionConfig,
     auth: AuthService,
     audit: AuditLog,
+    node_enrollment: NodeEnrollmentRegistry,
 }
 
 impl AppState {
@@ -98,6 +108,7 @@ impl AppState {
             terminal_config: TerminalSessionConfig::from_env(),
             auth: AuthService::from_env(),
             audit: AuditLog::default(),
+            node_enrollment: NodeEnrollmentRegistry::default(),
         }
     }
 }
@@ -216,6 +227,149 @@ impl Drop for TerminalSessionRegistry {
     }
 }
 
+#[derive(Clone)]
+struct NodeEnrollmentRegistry {
+    inner: Arc<Mutex<NodeEnrollmentState>>,
+    next_token_id: Arc<AtomicU64>,
+    next_node_id: Arc<AtomicU64>,
+}
+
+impl Default for NodeEnrollmentRegistry {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(NodeEnrollmentState::default())),
+            next_token_id: Arc::new(AtomicU64::new(1)),
+            next_node_id: Arc::new(AtomicU64::new(1)),
+        }
+    }
+}
+
+#[derive(Default)]
+struct NodeEnrollmentState {
+    tokens_by_hash: HashMap<u64, EnrollmentTokenRecord>,
+    nodes: Vec<NodeRecord>,
+    credentials: Vec<NodeCredentialRecord>,
+    heartbeats: Vec<NodeHeartbeatRecord>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct EnrollmentTokenRecord {
+    id: u64,
+    created_by_user_id: u64,
+    expires_at: Instant,
+    used_by_node_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+struct NodeRecord {
+    id: u64,
+    node_id: String,
+    display_name: String,
+    hostname: String,
+    os: String,
+    architecture: String,
+    agent_version: String,
+    status: NodeStatus,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum NodeStatus {
+    Enrolled,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct NodeCredentialRecord {
+    node_id: u64,
+    credential_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct NodeHeartbeatRecord {
+    node_id: u64,
+    status: NodeStatus,
+}
+
+impl NodeEnrollmentRegistry {
+    fn create_token(&self, user: &User, ttl: Duration) -> EnrollmentTokenResponse {
+        let token = random_token();
+        let token_hash = token_hash(&token);
+        let token_id = self.next_token_id.fetch_add(1, Ordering::Relaxed);
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.tokens_by_hash.insert(
+            token_hash,
+            EnrollmentTokenRecord {
+                id: token_id,
+                created_by_user_id: user.id,
+                expires_at: Instant::now() + ttl,
+                used_by_node_id: None,
+            },
+        );
+
+        EnrollmentTokenResponse {
+            token: token.clone(),
+            expires_in_secs: ttl.as_secs(),
+            enrollment_command: format!(
+                "SUNBOLT_CONTROL_PLANE_URL=http://127.0.0.1:3000 SUNBOLT_AGENT_ENROLLMENT_TOKEN={token} cargo run -p sunbolt-agent"
+            ),
+        }
+    }
+
+    fn enroll(
+        &self,
+        request: AgentEnrollmentRequest,
+    ) -> Result<AgentEnrollmentResponse, EnrollmentError> {
+        let token_hash = token_hash(&request.token);
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let token = state
+            .tokens_by_hash
+            .get_mut(&token_hash)
+            .ok_or(EnrollmentError::InvalidToken)?;
+        if token.used_by_node_id.is_some() {
+            return Err(EnrollmentError::TokenUsed);
+        }
+        if token.expires_at <= Instant::now() {
+            return Err(EnrollmentError::TokenExpired);
+        }
+
+        let id = self.next_node_id.fetch_add(1, Ordering::Relaxed);
+        let node_id = format!("node-{id}");
+        let credential_fingerprint = credential_fingerprint(&request);
+        token.used_by_node_id = Some(id);
+
+        state.nodes.push(NodeRecord {
+            id,
+            node_id: node_id.clone(),
+            display_name: request.node_name,
+            hostname: request.hostname,
+            os: request.os,
+            architecture: request.architecture,
+            agent_version: request.agent_version,
+            status: NodeStatus::Enrolled,
+        });
+        state.credentials.push(NodeCredentialRecord {
+            node_id: id,
+            credential_fingerprint: credential_fingerprint.clone(),
+        });
+        state.heartbeats.push(NodeHeartbeatRecord {
+            node_id: id,
+            status: NodeStatus::Enrolled,
+        });
+
+        Ok(AgentEnrollmentResponse {
+            node_id,
+            credential_fingerprint,
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct LoginRequest {
     email: String,
@@ -235,6 +389,34 @@ struct CurrentUserResponse {
 #[derive(Debug, Serialize)]
 struct AuditEntriesResponse {
     events: Vec<AuditEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnrollmentTokenRequest {
+    expires_in_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct EnrollmentTokenResponse {
+    token: String,
+    expires_in_secs: u64,
+    enrollment_command: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentEnrollmentRequest {
+    token: String,
+    node_name: String,
+    hostname: String,
+    os: String,
+    architecture: String,
+    agent_version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentEnrollmentResponse {
+    node_id: String,
+    credential_fingerprint: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -327,6 +509,42 @@ async fn audit_logs(State(state): State<AppState>) -> impl IntoResponse {
     Json(AuditEntriesResponse {
         events: state.audit.events(),
     })
+}
+
+async fn create_enrollment_token(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(request): Json<EnrollmentTokenRequest>,
+) -> impl IntoResponse {
+    let ttl = Duration::from_secs(request.expires_in_secs.unwrap_or(15 * 60).max(60));
+    Json(state.node_enrollment.create_token(&user.0, ttl))
+}
+
+async fn agent_enroll(
+    State(state): State<AppState>,
+    Json(request): Json<AgentEnrollmentRequest>,
+) -> impl IntoResponse {
+    match state.node_enrollment.enroll(request) {
+        Ok(response) => {
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::NodeEnrolled,
+                actor_email: None,
+                message: format!("node {} enrolled", response.node_id),
+            });
+            (StatusCode::CREATED, Json(response)).into_response()
+        }
+        Err(
+            EnrollmentError::InvalidToken
+            | EnrollmentError::TokenUsed
+            | EnrollmentError::TokenExpired,
+        ) => (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "invalid enrollment token",
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn require_auth_middleware(
@@ -863,6 +1081,42 @@ fn next_session_id() -> TerminalSessionId {
     TerminalSessionId(format!("local-{id}"))
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum EnrollmentError {
+    InvalidToken,
+    TokenUsed,
+    TokenExpired,
+}
+
+fn random_token() -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    token
+}
+
+fn token_hash(token: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn credential_fingerprint(request: &AgentEnrollmentRequest) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    request.node_name.hash(&mut hasher);
+    request.hostname.hash(&mut hasher);
+    request.os.hash(&mut hasher);
+    request.architecture.hash(&mut hasher);
+    request.agent_version.hash(&mut hasher);
+    format!("dev-{:016x}", hasher.finish())
+}
+
 fn session_token_from_headers(headers: &HeaderMap) -> Option<&str> {
     let cookie_header = headers.get(COOKIE)?.to_str().ok()?;
 
@@ -889,9 +1143,10 @@ fn env_duration_secs(name: &str) -> Option<Duration> {
 mod tests {
     use super::{
         authorize_terminal_request, build_router, component_name, exit_message,
-        parse_client_message, terminal_size_from_protocol, AppState, TerminalSessionConfig,
-        TerminalSessionRegistry, ACCESS_HISTORY_PATH, AUDIT_LOGS_PATH, AUTH_LOGIN_PATH,
-        AUTH_LOGOUT_PATH, AUTH_ME_PATH, SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
+        parse_client_message, terminal_size_from_protocol, AppState, NodeEnrollmentRegistry,
+        TerminalSessionConfig, TerminalSessionRegistry, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH,
+        AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, ENROLLMENT_TOKENS_PATH,
+        SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
@@ -1183,6 +1438,93 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn enrollment_token_requires_authentication() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(ENROLLMENT_TOKENS_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn enrollment_token_registers_agent_once() {
+        let router = test_router();
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+        let token_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(ENROLLMENT_TOKENS_PATH)
+                    .header(header::COOKIE, cookie.as_str())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"expires_in_secs": 300}).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(token_response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(token_response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        let token = payload["token"].as_str().expect("token should be present");
+        assert!(payload["enrollment_command"]
+            .as_str()
+            .expect("command should be present")
+            .contains("SUNBOLT_AGENT_ENROLLMENT_TOKEN"));
+
+        let enroll_body = json!({
+            "token": token,
+            "node_name": "node-a",
+            "hostname": "host-a",
+            "os": "linux",
+            "architecture": "x86_64",
+            "agent_version": "0.1.0"
+        })
+        .to_string();
+        let enroll_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AGENT_ENROLL_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(enroll_body.clone()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(enroll_response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(enroll_response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        assert_eq!(payload["node_id"], "node-1");
+
+        let reused_response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AGENT_ENROLL_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(enroll_body))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(reused_response.status(), StatusCode::UNAUTHORIZED);
+    }
+
     #[test]
     fn viewer_cannot_open_terminal() {
         let auth = test_auth_service();
@@ -1236,6 +1578,7 @@ mod tests {
             terminal_config: TerminalSessionConfig::from_env(),
             auth,
             audit: sunbolt_audit::AuditLog::default(),
+            node_enrollment: NodeEnrollmentRegistry::default(),
         })
     }
 
