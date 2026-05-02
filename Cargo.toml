@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "crates/sunbolt-agent",
+    "crates/sunbolt-audit",
+    "crates/sunbolt-auth",
+    "crates/sunbolt-common",
+    "crates/sunbolt-control",
+    "crates/sunbolt-protocol",
+    "crates/sunbolt-storage",
+    "crates/sunbolt-terminal",
+    "crates/sunbolt-ui",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

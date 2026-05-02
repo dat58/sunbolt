@@ -1,0 +1,15 @@
+[package]
+name = "sunbolt-control"
+description = "Sunbolt control plane skeleton."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+sunbolt-common = { path = "../sunbolt-common" }
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

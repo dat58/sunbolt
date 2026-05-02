@@ -27,31 +27,31 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Repository Setup
 
-- [ ] Rename or initialize the project as `sunbolt`.
-- [ ] Create a Rust workspace.
-- [ ] Add root `Cargo.toml` workspace members.
-- [ ] Add `README.md` with the Sunbolt product description.
-- [ ] Add `AGENTS.md`, `PLAN.md`, and `TASK.md`.
-- [ ] Add `.gitignore` for Rust, Dioxus, local env files, and build artifacts.
-- [ ] Add `.env.example` for local development config.
+- [x] Rename or initialize the project as `sunbolt`.
+- [x] Create a Rust workspace.
+- [x] Add root `Cargo.toml` workspace members.
+- [x] Add `README.md` with the Sunbolt product description.
+- [x] Add `AGENTS.md`, `PLAN.md`, and `TASK.md`.
+- [x] Add `.gitignore` for Rust, Dioxus, local env files, and build artifacts.
+- [x] Add `.env.example` for local development config.
 
 ## Workspace Crates / Modules
 
-- [ ] Create `crates/sunbolt-common`.
-- [ ] Create `crates/sunbolt-control`.
-- [ ] Create `crates/sunbolt-ui`.
-- [ ] Create `crates/sunbolt-terminal`.
-- [ ] Create `crates/sunbolt-auth`.
-- [ ] Create `crates/sunbolt-storage`.
-- [ ] Create `crates/sunbolt-audit`.
-- [ ] Create `crates/sunbolt-protocol`.
-- [ ] Defer `crates/sunbolt-agent` until Phase 3 unless needed earlier.
+- [x] Create `crates/sunbolt-common`.
+- [x] Create `crates/sunbolt-control`.
+- [x] Create `crates/sunbolt-ui`.
+- [x] Create `crates/sunbolt-terminal`.
+- [x] Create `crates/sunbolt-auth`.
+- [x] Create `crates/sunbolt-storage`.
+- [x] Create `crates/sunbolt-audit`.
+- [x] Create `crates/sunbolt-protocol`.
+- [x] Defer `crates/sunbolt-agent` until Phase 3 unless needed earlier.
 
 ## Tooling
 
-- [ ] Ensure `cargo test` runs successfully.
-- [ ] Ensure `cargo clippy --all-targets --all-features -- -D warnings` runs successfully.
-- [ ] Add formatting guidance using `cargo fmt`.
+- [x] Ensure `cargo test` runs successfully.
+- [x] Ensure `cargo clippy --all-targets --all-features -- -D warnings` runs successfully.
+- [x] Add formatting guidance using `cargo fmt`.
 - [ ] Add basic CI workflow if GitHub Actions is used.
 - [ ] Add local development command documentation.
 
