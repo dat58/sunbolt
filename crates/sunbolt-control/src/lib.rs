@@ -332,7 +332,7 @@ async fn send_server_message(
     message: TerminalServerMessage,
 ) -> Result<(), axum::Error> {
     socket
-        .send(Message::Text(serialize_server_message(&message)))
+        .send(Message::Text(serialize_server_message(&message).into()))
         .await
 }
 
@@ -341,7 +341,7 @@ async fn send_split_server_message(
     message: TerminalServerMessage,
 ) -> Result<(), axum::Error> {
     sender
-        .send(Message::Text(serialize_server_message(&message)))
+        .send(Message::Text(serialize_server_message(&message).into()))
         .await
 }
 
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn parse_client_message_rejects_invalid_json() {
-        let error = parse_client_message(Message::Text("{".to_owned()))
+        let error = parse_client_message(Message::Text("{".to_owned().into()))
             .expect_err("invalid JSON should be rejected");
 
         assert_eq!(
@@ -414,7 +414,9 @@ mod tests {
     #[test]
     fn parse_client_message_accepts_start_message() {
         let message = parse_client_message(Message::Text(
-            r#"{"type":"start","node_id":null,"initial_size":{"cols":80,"rows":24}}"#.to_owned(),
+            r#"{"type":"start","node_id":null,"initial_size":{"cols":80,"rows":24}}"#
+                .to_owned()
+                .into(),
         ))
         .expect("start message should parse");
 

@@ -1,0 +1,11 @@
+{
+  "name": "sunbolt-ui",
+  "private": true,
+  "scripts": {
+    "css:build": "tailwindcss -c tailwind.config.js -i styles/tailwind.css -o assets/sunbolt.css --minify",
+    "css:watch": "tailwindcss -c tailwind.config.js -i styles/tailwind.css -o assets/sunbolt.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.19"
+  }
+}

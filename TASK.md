@@ -52,6 +52,8 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 - [x] Ensure `cargo test` runs successfully.
 - [x] Ensure `cargo clippy --all-targets --all-features -- -D warnings` runs successfully.
 - [x] Add formatting guidance using `cargo fmt`.
+- [x] Add Tailwind CSS tooling for web UI design.
+- [x] Upgrade Axum to 0.8.
 - [ ] Add basic CI workflow if GitHub Actions is used.
 - [ ] Add local development command documentation.
 
@@ -68,7 +70,7 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 - [ ] Add Dioxus web app shell.
 - [ ] Add base layout.
-- [ ] Add Sunbolt theme colors.
+- [x] Add Sunbolt theme colors.
 - [ ] Add placeholder dashboard page.
 - [ ] Add placeholder terminal page.
 - [ ] Add placeholder nodes page.

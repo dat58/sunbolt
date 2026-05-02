@@ -8,6 +8,19 @@ pub const TERMINAL_MOUNT_ID: &str = "sunbolt-terminal";
 pub const TERMINAL_WS_ENDPOINT: &str = "/terminal/ws";
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
+const STATUS_BASE_CLASS: &str = "inline-flex h-6 items-center rounded-full border px-2.5 text-xs";
+const STATUS_CONNECTING_CLASS: &str =
+    "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-terminal-border text-terminal-muted";
+const STATUS_CONNECTED_CLASS: &str =
+    "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-lightning-cyan text-lightning-cyan";
+const STATUS_ERROR_CLASS: &str =
+    "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-warm-orange text-warm-orange";
+const STATUS_CLOSED_CLASS: &str =
+    "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-terminal-border text-terminal-muted";
+const FALLBACK_OUTPUT_CLASS: &str =
+    "box-border h-[calc(100%-72px)] m-0 overflow-auto whitespace-pre-wrap font-mono text-sm";
+const FALLBACK_INPUT_CLASS: &str =
+    "mt-3 h-14 w-full resize-none box-border border border-terminal-border bg-terminal-surface font-mono text-sm text-terminal-text";
 
 /// Returns the display title for the web UI shell.
 #[must_use]
@@ -28,25 +41,31 @@ pub fn App() -> Element {
 pub fn TerminalPage() -> Element {
     rsx! {
         main {
-            class: "sunbolt-terminal-page",
-            style { dangerous_inner_html: TERMINAL_PAGE_CSS }
+            class: "min-h-screen bg-terminal-bg font-sans text-terminal-text",
             section {
-                class: "terminal-shell",
+                class: "grid min-h-screen grid-rows-[48px_minmax(0,1fr)]",
                 header {
-                    class: "terminal-toolbar",
-                    h1 { "Sunbolt" }
+                    class: "flex items-center justify-between border-b border-terminal-border bg-terminal-surface px-4",
+                    h1 {
+                        class: "m-0 text-[15px] font-bold text-sun-amber",
+                        "Sunbolt"
+                    }
                     div {
                         id: "sunbolt-terminal-status",
-                        class: "terminal-status terminal-status-connecting",
+                        class: STATUS_CONNECTING_CLASS,
                         "Connecting"
                     }
                 }
                 div {
                     id: TERMINAL_MOUNT_ID,
-                    class: "terminal-mount",
+                    class: "min-h-0 overflow-hidden p-3 [&_.xterm]:h-full",
                     tabindex: "0",
                     "Terminal loading"
                 }
+            }
+            link {
+                rel: "stylesheet",
+                href: "/assets/sunbolt.css"
             }
             script {
                 src: "https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.min.js"
@@ -89,7 +108,13 @@ pub fn terminal_bridge_script() -> String {
       return;
     }}
     status.textContent = label;
-    status.className = `terminal-status terminal-status-${{state}}`;
+    const classes = {{
+      connecting: "{status_connecting_class}",
+      connected: "{status_connected_class}",
+      error: "{status_error_class}",
+      closed: "{status_closed_class}"
+    }};
+    status.className = classes[state] || "{status_base_class}";
   }};
 
   const writeOutput = (data) => {{
@@ -184,9 +209,9 @@ pub fn terminal_bridge_script() -> String {
   }} else {{
     mount.innerHTML = "";
     fallbackOutput = document.createElement("pre");
-    fallbackOutput.className = "terminal-fallback-output";
+    fallbackOutput.className = "{fallback_output_class}";
     fallbackInput = document.createElement("textarea");
-    fallbackInput.className = "terminal-fallback-input";
+    fallbackInput.className = "{fallback_input_class}";
     fallbackInput.spellcheck = false;
     fallbackInput.addEventListener("input", () => {{
       sendInput(fallbackInput.value);
@@ -210,101 +235,15 @@ pub fn terminal_bridge_script() -> String {
         endpoint = TERMINAL_WS_ENDPOINT,
         cols = DEFAULT_TERMINAL_SIZE.cols,
         rows = DEFAULT_TERMINAL_SIZE.rows,
+        status_base_class = STATUS_BASE_CLASS,
+        status_connecting_class = STATUS_CONNECTING_CLASS,
+        status_connected_class = STATUS_CONNECTED_CLASS,
+        status_error_class = STATUS_ERROR_CLASS,
+        status_closed_class = STATUS_CLOSED_CLASS,
+        fallback_output_class = FALLBACK_OUTPUT_CLASS,
+        fallback_input_class = FALLBACK_INPUT_CLASS,
     )
 }
-
-const TERMINAL_PAGE_CSS: &str = r#"
-html,
-body,
-#main {
-  height: 100%;
-  margin: 0;
-}
-
-.sunbolt-terminal-page {
-  min-height: 100vh;
-  background: #09090B;
-  color: #FAFAFA;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-.terminal-shell {
-  min-height: 100vh;
-  display: grid;
-  grid-template-rows: 48px minmax(0, 1fr);
-}
-
-.terminal-toolbar {
-  align-items: center;
-  border-bottom: 1px solid #27272A;
-  background: #18181B;
-  display: flex;
-  justify-content: space-between;
-  padding: 0 16px;
-}
-
-.terminal-toolbar h1 {
-  color: #FBBF24;
-  font-size: 15px;
-  font-weight: 700;
-  margin: 0;
-}
-
-.terminal-status {
-  align-items: center;
-  border: 1px solid #27272A;
-  border-radius: 999px;
-  color: #A1A1AA;
-  display: inline-flex;
-  font-size: 12px;
-  height: 24px;
-  padding: 0 10px;
-}
-
-.terminal-status-connected {
-  border-color: #22D3EE;
-  color: #22D3EE;
-}
-
-.terminal-status-error {
-  border-color: #F59E0B;
-  color: #F59E0B;
-}
-
-.terminal-status-closed {
-  color: #A1A1AA;
-}
-
-.terminal-mount {
-  min-height: 0;
-  overflow: hidden;
-  padding: 12px;
-}
-
-.terminal-mount .xterm {
-  height: 100%;
-}
-
-.terminal-fallback-output {
-  box-sizing: border-box;
-  height: calc(100% - 72px);
-  margin: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
-.terminal-fallback-input {
-  background: #18181B;
-  border: 1px solid #27272A;
-  box-sizing: border-box;
-  color: #FAFAFA;
-  font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  height: 56px;
-  margin-top: 12px;
-  resize: none;
-  width: 100%;
-}
-"#;
 
 #[cfg(test)]
 mod tests {
@@ -325,5 +264,6 @@ mod tests {
         assert!(script.contains(r#"type: "input""#));
         assert!(script.contains(r#"type: "resize""#));
         assert!(script.contains(r#"type: "close""#));
+        assert!(script.contains("border-lightning-cyan"));
     }
 }
