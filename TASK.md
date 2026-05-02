@@ -84,20 +84,20 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 - [x] Choose PTY crate for local terminal spawning.
 - [x] Implement `TerminalSessionId` type.
-- [ ] Implement terminal session states:
-  - [ ] `Created`
-  - [ ] `Starting`
-  - [ ] `Active`
-  - [ ] `Closing`
-  - [ ] `Closed`
-  - [ ] `Failed`
+- [x] Implement terminal session states:
+  - [x] `Created`
+  - [x] `Starting`
+  - [x] `Active`
+  - [x] `Closing`
+  - [x] `Closed`
+  - [x] `Failed`
 - [x] Implement local PTY spawn.
 - [x] Implement terminal input write.
 - [x] Implement terminal output read.
 - [x] Implement terminal resize.
 - [x] Implement terminal close.
-- [ ] Implement terminal process exit handling.
-- [ ] Add unit tests for session state transitions.
+- [x] Implement terminal process exit handling.
+- [x] Add unit tests for session state transitions.
 
 ## WebSocket Terminal Stream
 
@@ -118,7 +118,7 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 - [x] Implement terminal output forwarding.
 - [x] Handle browser disconnect.
 - [x] Handle backend PTY failure.
-- [ ] Add backpressure strategy or document temporary behavior.
+- [x] Add backpressure strategy or document temporary behavior.
 
 ## Terminal UI
 
@@ -128,18 +128,18 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 - [x] Render terminal output from WebSocket.
 - [x] Send resize events to backend.
 - [x] Add terminal connection status indicator.
-- [ ] Add close terminal button.
-- [ ] Add reconnect placeholder UI.
+- [x] Add close terminal button.
+- [x] Add reconnect placeholder UI.
 - [ ] Test on desktop browser.
 - [ ] Test on iPhone/mobile browser.
 
 ## Session Tracking
 
-- [ ] Track active sessions in memory.
-- [ ] Add max sessions per process config.
-- [ ] Add idle timeout config.
-- [ ] Add graceful cleanup on close.
-- [ ] Add cleanup on backend shutdown.
+- [x] Track active sessions in memory.
+- [x] Add max sessions per process config.
+- [x] Add idle timeout config.
+- [x] Add graceful cleanup on close.
+- [x] Add cleanup on backend shutdown.
 
 ---
 

@@ -17,6 +17,8 @@ const STATUS_ERROR_CLASS: &str =
     "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-warm-orange text-warm-orange";
 const STATUS_CLOSED_CLASS: &str =
     "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-terminal-border text-terminal-muted";
+const ACTION_BUTTON_CLASS: &str =
+    "inline-flex h-7 items-center border border-terminal-border bg-terminal-bg px-3 text-xs text-terminal-text hover:border-lightning-cyan hover:text-lightning-cyan disabled:cursor-not-allowed disabled:opacity-40";
 const FALLBACK_OUTPUT_CLASS: &str =
     "box-border h-[calc(100%-72px)] m-0 overflow-auto whitespace-pre-wrap font-mono text-sm";
 const FALLBACK_INPUT_CLASS: &str =
@@ -51,9 +53,23 @@ pub fn TerminalPage() -> Element {
                         "Sunbolt"
                     }
                     div {
-                        id: "sunbolt-terminal-status",
-                        class: STATUS_CONNECTING_CLASS,
-                        "Connecting"
+                        class: "flex items-center gap-2",
+                        div {
+                            id: "sunbolt-terminal-status",
+                            class: STATUS_CONNECTING_CLASS,
+                            "Connecting"
+                        }
+                        button {
+                            id: "sunbolt-terminal-reconnect",
+                            class: ACTION_BUTTON_CLASS,
+                            disabled: true,
+                            "Reconnect"
+                        }
+                        button {
+                            id: "sunbolt-terminal-close",
+                            class: ACTION_BUTTON_CLASS,
+                            "Close"
+                        }
                     }
                 }
                 div {
@@ -90,6 +106,8 @@ pub fn terminal_bridge_script() -> String {
 (() => {{
   const mount = document.getElementById("{mount_id}");
   const status = document.getElementById("sunbolt-terminal-status");
+  const closeButton = document.getElementById("sunbolt-terminal-close");
+  const reconnectButton = document.getElementById("sunbolt-terminal-reconnect");
   if (!mount || mount.dataset.sunboltTerminalReady === "true") {{
     return;
   }}
@@ -115,6 +133,12 @@ pub fn terminal_bridge_script() -> String {
       closed: "{status_closed_class}"
     }};
     status.className = classes[state] || "{status_base_class}";
+    if (closeButton) {{
+      closeButton.disabled = state === "closed";
+    }}
+    if (reconnectButton) {{
+      reconnectButton.disabled = true;
+    }}
   }};
 
   const writeOutput = (data) => {{
@@ -192,6 +216,16 @@ pub fn terminal_bridge_script() -> String {
     send({{ type: "input", session_id: sessionId, data }});
   }};
 
+  const closeTerminal = () => {{
+    if (sessionId) {{
+      send({{ type: "close", session_id: sessionId }});
+    }}
+    if (socket) {{
+      socket.close();
+    }}
+    setStatus("Closed", "closed");
+  }};
+
   if (window.Terminal) {{
     terminal = new window.Terminal({{
       cursorBlink: true,
@@ -223,6 +257,9 @@ pub fn terminal_bridge_script() -> String {
 
   const observer = new ResizeObserver(resize);
   observer.observe(mount);
+  if (closeButton) {{
+    closeButton.addEventListener("click", closeTerminal);
+  }}
   window.addEventListener("beforeunload", () => {{
     if (sessionId) {{
       send({{ type: "close", session_id: sessionId }});
@@ -264,6 +301,8 @@ mod tests {
         assert!(script.contains(r#"type: "input""#));
         assert!(script.contains(r#"type: "resize""#));
         assert!(script.contains(r#"type: "close""#));
+        assert!(script.contains("sunbolt-terminal-close"));
+        assert!(script.contains("sunbolt-terminal-reconnect"));
         assert!(script.contains("border-lightning-cyan"));
     }
 }

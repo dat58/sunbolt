@@ -1,28 +1,38 @@
 use std::{
+    collections::HashMap,
+    env,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
     response::IntoResponse,
     routing::get,
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
 use sunbolt_protocol::{
-    TerminalClientMessage, TerminalError as ProtocolTerminalError, TerminalErrorCode,
+    TerminalClientMessage, TerminalError as ProtocolTerminalError, TerminalErrorCode, TerminalExit,
     TerminalServerMessage, TerminalSessionId, TerminalSize as ProtocolTerminalSize,
 };
-use sunbolt_terminal::{LocalPtySession, TerminalError, TerminalSize};
+use sunbolt_terminal::{
+    LocalPtySession, TerminalError, TerminalExitStatus, TerminalSessionState, TerminalSize,
+};
 use tokio::{sync::mpsc, task};
 
 const OUTPUT_BUFFER_SIZE: usize = 8192;
 const OUTPUT_CHANNEL_CAPACITY: usize = 32;
 const READ_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
+const DEFAULT_MAX_TERMINAL_SESSIONS: usize = 16;
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -37,14 +47,149 @@ pub fn component_name() -> String {
 
 /// Builds the control-plane router.
 pub fn router() -> Router {
-    Router::new().route(TERMINAL_WS_PATH, get(terminal_websocket))
+    Router::new()
+        .route(TERMINAL_WS_PATH, get(terminal_websocket))
+        .with_state(AppState::from_env())
 }
 
-async fn terminal_websocket(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_terminal_socket)
+#[derive(Clone)]
+struct AppState {
+    sessions: TerminalSessionRegistry,
+    terminal_config: TerminalSessionConfig,
 }
 
-async fn handle_terminal_socket(mut socket: WebSocket) {
+impl AppState {
+    fn from_env() -> Self {
+        Self {
+            sessions: TerminalSessionRegistry::default(),
+            terminal_config: TerminalSessionConfig::from_env(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct TerminalSessionConfig {
+    max_sessions: usize,
+    idle_timeout: Duration,
+}
+
+impl TerminalSessionConfig {
+    fn from_env() -> Self {
+        Self {
+            max_sessions: env_usize("SUNBOLT_MAX_TERMINAL_SESSIONS")
+                .unwrap_or(DEFAULT_MAX_TERMINAL_SESSIONS),
+            idle_timeout: env_duration_secs("SUNBOLT_TERMINAL_IDLE_TIMEOUT_SECS")
+                .unwrap_or(DEFAULT_IDLE_TIMEOUT),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct TerminalSessionRegistry {
+    inner: Arc<Mutex<HashMap<TerminalSessionId, TrackedTerminalSession>>>,
+}
+
+struct TrackedTerminalSession {
+    session: Arc<LocalPtySession>,
+    state: TerminalSessionState,
+    last_activity: Instant,
+}
+
+impl TerminalSessionRegistry {
+    fn insert(
+        &self,
+        session_id: TerminalSessionId,
+        session: Arc<LocalPtySession>,
+        max_sessions: usize,
+    ) -> bool {
+        let Ok(mut sessions) = self.inner.lock() else {
+            return false;
+        };
+        if sessions.len() >= max_sessions {
+            return false;
+        }
+
+        sessions.insert(
+            session_id,
+            TrackedTerminalSession {
+                session,
+                state: TerminalSessionState::Starting,
+                last_activity: Instant::now(),
+            },
+        );
+        true
+    }
+
+    fn set_state(&self, session_id: &TerminalSessionId, state: TerminalSessionState) {
+        if let Ok(mut sessions) = self.inner.lock() {
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.state = state;
+            }
+        }
+    }
+
+    fn touch(&self, session_id: &TerminalSessionId) {
+        if let Ok(mut sessions) = self.inner.lock() {
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.last_activity = Instant::now();
+            }
+        }
+    }
+
+    fn is_idle(&self, session_id: &TerminalSessionId, timeout: Duration) -> bool {
+        let Ok(sessions) = self.inner.lock() else {
+            return true;
+        };
+        sessions
+            .get(session_id)
+            .is_none_or(|session| session.last_activity.elapsed() >= timeout)
+    }
+
+    fn remove(&self, session_id: &TerminalSessionId) {
+        if let Ok(mut sessions) = self.inner.lock() {
+            if let Some(session) = sessions.remove(session_id) {
+                let _ = session.session.close();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.inner.lock().map_or(0, |sessions| sessions.len())
+    }
+
+    #[cfg(test)]
+    fn state(&self, session_id: &TerminalSessionId) -> Option<TerminalSessionState> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(session_id).map(|session| session.state))
+    }
+}
+
+impl Drop for TerminalSessionRegistry {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.inner) != 1 {
+            return;
+        }
+
+        if let Ok(mut sessions) = self.inner.lock() {
+            for (_, session) in sessions.drain() {
+                let _ = session.session.close();
+            }
+        }
+    }
+}
+
+async fn terminal_websocket(
+    State(state): State<AppState>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state))
+}
+
+#[allow(clippy::too_many_lines)]
+async fn handle_terminal_socket(mut socket: WebSocket, state: AppState) {
     let Some(start) = receive_start_message(&mut socket).await else {
         return;
     };
@@ -67,6 +212,26 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
         }
     };
 
+    if !state.sessions.insert(
+        session_id.clone(),
+        Arc::clone(&session),
+        state.terminal_config.max_sessions,
+    ) {
+        let _ = session.close();
+        let _ = send_server_message(
+            &mut socket,
+            TerminalServerMessage::Error {
+                session_id: Some(session_id),
+                error: protocol_error_text(
+                    TerminalErrorCode::TerminalUnavailable,
+                    "maximum terminal session count reached",
+                ),
+            },
+        )
+        .await;
+        return;
+    }
+
     if send_server_message(
         &mut socket,
         TerminalServerMessage::Started {
@@ -82,6 +247,10 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
         return;
     }
 
+    state
+        .sessions
+        .set_state(&session_id, TerminalSessionState::Active);
+
     let (mut sender, mut receiver) = socket.split();
     let (output_tx, mut output_rx) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
     let output_session = Arc::clone(&session);
@@ -91,9 +260,15 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
         read_pty_output(output_session, output_session_id, output_tx);
     });
 
+    let mut idle_check = tokio::time::interval(IDLE_CHECK_INTERVAL);
+
     loop {
         tokio::select! {
             Some(output) = output_rx.recv() => {
+                state.sessions.touch(&session_id);
+                if matches!(output, TerminalServerMessage::Exited { .. }) {
+                    state.sessions.set_state(&session_id, TerminalSessionState::Closed);
+                }
                 if send_split_server_message(&mut sender, output).await.is_err() {
                     break;
                 }
@@ -101,17 +276,38 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
             incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(message)) => {
-                        if !handle_client_frame(&session, &session_id, message, &mut sender).await {
+                        state.sessions.touch(&session_id);
+                        if !handle_client_frame(&state.sessions, &session, &session_id, message, &mut sender).await {
                             break;
                         }
                     }
                     Some(Err(_)) | None => break,
                 }
             }
+            _ = idle_check.tick() => {
+                if state.sessions.is_idle(&session_id, state.terminal_config.idle_timeout) {
+                    state.sessions.set_state(&session_id, TerminalSessionState::Closing);
+                    let _ = send_split_server_message(
+                        &mut sender,
+                        TerminalServerMessage::Error {
+                            session_id: Some(session_id.clone()),
+                            error: protocol_error_text(
+                                TerminalErrorCode::TerminalUnavailable,
+                                "terminal session idle timeout reached",
+                            ),
+                        },
+                    )
+                    .await;
+                    break;
+                }
+            }
         }
     }
 
-    let _ = session.close();
+    state
+        .sessions
+        .set_state(&session_id, TerminalSessionState::Closing);
+    state.sessions.remove(&session_id);
     let _ = tokio::time::timeout(READ_SHUTDOWN_GRACE, output_reader).await;
 }
 
@@ -161,6 +357,7 @@ async fn receive_start_message(socket: &mut WebSocket) -> Option<StartTerminal> 
 }
 
 async fn handle_client_frame(
+    registry: &TerminalSessionRegistry,
     session: &LocalPtySession,
     active_session_id: &TerminalSessionId,
     message: Message,
@@ -218,7 +415,16 @@ async fn handle_client_frame(
             if !session_id_matches(&session_id, active_session_id, sender).await {
                 return true;
             }
+            registry.set_state(active_session_id, TerminalSessionState::Closing);
             let _ = session.close();
+            let _ = send_split_server_message(
+                sender,
+                TerminalServerMessage::Exited {
+                    session_id: active_session_id.clone(),
+                    exit: TerminalExit { status: None },
+                },
+            )
+            .await;
             false
         }
         TerminalClientMessage::Ping { nonce } => {
@@ -280,9 +486,15 @@ fn read_pty_output(
         }
 
         match session.read_output(&mut buffer) {
-            Ok(0) | Err(TerminalError::Closed) => break,
+            Ok(0) | Err(TerminalError::Closed) => {
+                break;
+            }
             Ok(read) => {
                 let data = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                // The bounded channel is the temporary backpressure strategy:
+                // this blocking send slows PTY reads when the WebSocket writer
+                // cannot keep up, instead of buffering terminal output without
+                // limit.
                 if output_tx
                     .blocking_send(TerminalServerMessage::Output {
                         session_id: session_id.clone(),
@@ -294,13 +506,28 @@ fn read_pty_output(
                 }
             }
             Err(error) => {
-                let _ = output_tx.blocking_send(TerminalServerMessage::Error {
-                    session_id: Some(session_id),
-                    error: protocol_error(TerminalErrorCode::TerminalUnavailable, error),
-                });
+                if let Ok(Some(exit)) = session.try_wait_exit() {
+                    let _ = output_tx.blocking_send(exit_message(session_id.clone(), exit));
+                } else {
+                    let _ = output_tx.blocking_send(TerminalServerMessage::Error {
+                        session_id: Some(session_id.clone()),
+                        error: protocol_error(TerminalErrorCode::TerminalUnavailable, error),
+                    });
+                }
                 break;
             }
         }
+    }
+
+    if let Ok(Some(exit)) = session.wait_exit() {
+        let _ = output_tx.blocking_send(exit_message(session_id, exit));
+    }
+}
+
+fn exit_message(session_id: TerminalSessionId, exit: TerminalExitStatus) -> TerminalServerMessage {
+    TerminalServerMessage::Exited {
+        session_id,
+        exit: TerminalExit { status: exit.code },
     }
 }
 
@@ -374,17 +601,32 @@ fn next_session_id() -> TerminalSessionId {
     TerminalSessionId(format!("local-{id}"))
 }
 
+fn env_usize(name: &str) -> Option<usize> {
+    env::var(name).ok()?.parse().ok()
+}
+
+fn env_duration_secs(name: &str) -> Option<Duration> {
+    env_usize(name).and_then(|seconds| u64::try_from(seconds).ok().map(Duration::from_secs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        component_name, parse_client_message, router, terminal_size_from_protocol, TERMINAL_WS_PATH,
+        component_name, exit_message, parse_client_message, router, terminal_size_from_protocol,
+        TerminalSessionConfig, TerminalSessionRegistry, TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
         extract::ws::Message,
         http::{Request, StatusCode},
     };
-    use sunbolt_protocol::{TerminalClientMessage, TerminalSize};
+    use std::{process::Command, sync::Arc, time::Duration};
+    use sunbolt_protocol::{
+        TerminalClientMessage, TerminalServerMessage, TerminalSessionId, TerminalSize,
+    };
+    use sunbolt_terminal::{
+        LocalPtySession, TerminalExitStatus, TerminalSessionState, TerminalSize as PtyTerminalSize,
+    };
     use tower::ServiceExt;
 
     #[test]
@@ -398,6 +640,67 @@ mod tests {
 
         assert_eq!(size.cols, 1);
         assert_eq!(size.rows, 1);
+    }
+
+    #[test]
+    fn default_terminal_session_config_is_bounded() {
+        let config = TerminalSessionConfig::from_env();
+
+        assert!(config.max_sessions > 0);
+        assert!(config.idle_timeout >= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn terminal_session_registry_tracks_state_and_cleanup() {
+        let Some(shell) = test_shell() else {
+            return;
+        };
+
+        let registry = TerminalSessionRegistry::default();
+        let session_id = TerminalSessionId("session-1".to_owned());
+        let session = Arc::new(
+            LocalPtySession::spawn_shell(shell, PtyTerminalSize::new(80, 24))
+                .expect("test shell should spawn"),
+        );
+
+        assert!(registry.insert(session_id.clone(), Arc::clone(&session), 1));
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry.state(&session_id),
+            Some(TerminalSessionState::Starting)
+        );
+
+        registry.set_state(&session_id, TerminalSessionState::Active);
+        assert_eq!(
+            registry.state(&session_id),
+            Some(TerminalSessionState::Active)
+        );
+
+        assert!(!registry.insert(
+            TerminalSessionId("session-2".to_owned()),
+            Arc::clone(&session),
+            1
+        ));
+
+        registry.remove(&session_id);
+        assert_eq!(registry.len(), 0);
+        assert!(session.is_closed());
+    }
+
+    #[test]
+    fn exit_status_maps_to_protocol_message() {
+        let message = exit_message(
+            TerminalSessionId("session-1".to_owned()),
+            TerminalExitStatus { code: Some(3) },
+        );
+
+        assert!(matches!(
+            message,
+            TerminalServerMessage::Exited {
+                exit: sunbolt_protocol::TerminalExit { status: Some(3) },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -451,5 +754,20 @@ mod tests {
             .expect("router should respond");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    fn test_shell() -> Option<String> {
+        for candidate in ["/bin/sh", "/usr/bin/sh"] {
+            if Command::new(candidate)
+                .arg("-c")
+                .arg("exit 0")
+                .status()
+                .is_ok()
+            {
+                return Some(candidate.to_owned());
+            }
+        }
+
+        None
     }
 }

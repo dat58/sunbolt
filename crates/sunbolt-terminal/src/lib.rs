@@ -10,10 +10,35 @@ use std::{
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use thiserror::Error;
 
-/// Minimal terminal session states reserved for the terminal core boundary.
+/// Terminal session lifecycle states shared by terminal backends.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum TerminalSessionState {
     Created,
+    Starting,
+    Active,
+    Closing,
+    Closed,
+    Failed,
+}
+
+impl TerminalSessionState {
+    /// Returns true when a session can move from `self` to `next`.
+    #[must_use]
+    pub const fn can_transition_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Created, Self::Starting)
+                | (Self::Starting, Self::Active | Self::Failed)
+                | (Self::Active, Self::Closing | Self::Failed)
+                | (Self::Closing | Self::Failed, Self::Closed)
+        )
+    }
+}
+
+/// Exit status for a local terminal child process.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct TerminalExitStatus {
+    pub code: Option<i32>,
 }
 
 /// Terminal viewport size in character cells.
@@ -61,6 +86,8 @@ pub enum TerminalError {
     Resize(#[source] anyhow::Error),
     #[error("failed to close PTY session: {0}")]
     Close(#[source] io::Error),
+    #[error("failed to wait for PTY process exit: {0}")]
+    Wait(#[source] io::Error),
     #[error("PTY session is already closed")]
     Closed,
     #[error("default shell is not configured")]
@@ -210,6 +237,54 @@ impl LocalPtySession {
         Ok(())
     }
 
+    /// Polls for child process exit without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the child lock is poisoned or polling the child
+    /// process fails.
+    pub fn try_wait_exit(&self) -> Result<Option<TerminalExitStatus>, TerminalError> {
+        let mut child_guard = self
+            .child
+            .lock()
+            .map_err(|_| TerminalError::LockPoisoned("child"))?;
+        let Some(child) = child_guard.as_mut() else {
+            return Ok(None);
+        };
+
+        let Some(status) = child.try_wait().map_err(TerminalError::Wait)? else {
+            return Ok(None);
+        };
+
+        self.closed.store(true, Ordering::SeqCst);
+        *child_guard = None;
+        Ok(Some(TerminalExitStatus {
+            code: i32::try_from(status.exit_code()).ok(),
+        }))
+    }
+
+    /// Waits for child process exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the child lock is poisoned or waiting for the
+    /// child process fails.
+    pub fn wait_exit(&self) -> Result<Option<TerminalExitStatus>, TerminalError> {
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|_| TerminalError::LockPoisoned("child"))?;
+        let Some(mut child) = child.take() else {
+            return Ok(None);
+        };
+
+        let status = child.wait().map_err(TerminalError::Wait)?;
+        self.closed.store(true, Ordering::SeqCst);
+        Ok(Some(TerminalExitStatus {
+            code: i32::try_from(status.exit_code()).ok(),
+        }))
+    }
+
     /// Returns true when `close` has been called.
     #[must_use]
     pub fn is_closed(&self) -> bool {
@@ -247,6 +322,19 @@ mod tests {
     #[test]
     fn initial_state_is_created() {
         assert_eq!(TerminalSessionState::Created, TerminalSessionState::Created);
+    }
+
+    #[test]
+    fn terminal_session_state_transitions_are_explicit() {
+        assert!(TerminalSessionState::Created.can_transition_to(TerminalSessionState::Starting));
+        assert!(TerminalSessionState::Starting.can_transition_to(TerminalSessionState::Active));
+        assert!(TerminalSessionState::Active.can_transition_to(TerminalSessionState::Closing));
+        assert!(TerminalSessionState::Closing.can_transition_to(TerminalSessionState::Closed));
+        assert!(TerminalSessionState::Active.can_transition_to(TerminalSessionState::Failed));
+        assert!(TerminalSessionState::Failed.can_transition_to(TerminalSessionState::Closed));
+
+        assert!(!TerminalSessionState::Created.can_transition_to(TerminalSessionState::Active));
+        assert!(!TerminalSessionState::Closed.can_transition_to(TerminalSessionState::Active));
     }
 
     #[test]
@@ -288,6 +376,22 @@ mod tests {
             session.write_input(b"ignored"),
             Err(TerminalError::Closed)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_pty_reports_process_exit() {
+        let script = TestScript::new("sunbolt-pty-exit", "#!/bin/sh\nexit 7\n")
+            .expect("test script should be created");
+
+        let session = LocalPtySession::spawn_shell(script.path_string(), TerminalSize::new(80, 24))
+            .expect("test script should spawn in PTY");
+
+        let exit = wait_for_exit(&session, Duration::from_secs(3))
+            .expect("process exit should be reported");
+
+        assert_eq!(exit.code, Some(7));
+        assert!(session.is_closed());
     }
 
     #[cfg(unix)]
@@ -363,6 +467,26 @@ mod tests {
             io::ErrorKind::TimedOut,
             "timed out waiting for PTY output",
         ))
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(
+        session: &LocalPtySession,
+        timeout: Duration,
+    ) -> Option<super::TerminalExitStatus> {
+        let deadline = Instant::now() + timeout;
+
+        while Instant::now() < deadline {
+            if let Some(exit) = session
+                .try_wait_exit()
+                .expect("process polling should succeed")
+            {
+                return Some(exit);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        None
     }
 
     #[cfg(unix)]
