@@ -244,12 +244,12 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## MFA Foundation
 
-- [ ] Create `AuthFactor` trait.
-- [ ] Define `FactorType` enum.
-- [ ] Define challenge and response types.
-- [ ] Add `auth_factors` table.
-- [ ] Add factor enrollment flow.
-- [ ] Add factor verification flow.
+- [x] Create `AuthFactor` trait.
+- [x] Define `FactorType` enum.
+- [x] Define challenge and response types.
+- [x] Add `auth_factors` table.
+- [x] Add factor enrollment flow.
+- [x] Add factor verification flow.
 
 ## TOTP
 
