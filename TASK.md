@@ -253,10 +253,10 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## TOTP
 
-- [ ] Add TOTP secret generation.
-- [ ] Add QR code display.
-- [ ] Add TOTP verification.
-- [ ] Add TOTP recovery path.
+- [x] Add TOTP secret generation.
+- [x] Add QR code display.
+- [x] Add TOTP verification.
+- [x] Add TOTP recovery path.
 
 ## Recovery Codes
 

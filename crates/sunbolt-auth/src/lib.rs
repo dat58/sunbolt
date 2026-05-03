@@ -14,11 +14,13 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 mod mfa;
+mod totp;
 
 pub use mfa::{
     AuthContext, AuthFactor, AuthFactorEnrollment, FactorChallenge, FactorResponse, FactorResult,
     FactorType, MfaPurpose,
 };
+pub use totp::{TotpConfig, TotpEnrollment, TotpFactor, TotpRecoveryPath, TotpSecret};
 
 const DEFAULT_SESSION_TTL_SECS: u64 = 8 * 60 * 60;
 const DEFAULT_ADMIN_EMAIL: &str = "admin@sunbolt.local";
@@ -101,6 +103,7 @@ struct AuthStore {
     sessions_by_token: HashMap<String, SessionRecord>,
     auth_factors_by_id: HashMap<u64, AuthFactorEnrollment>,
     factor_ids_by_user_id: HashMap<u64, Vec<u64>>,
+    totp_secrets_by_factor_id: HashMap<u64, TotpSecret>,
 }
 
 /// In-memory authentication service used for Phase 2 development flow.
@@ -320,6 +323,57 @@ impl AuthService {
         Ok(enrollment)
     }
 
+    /// Enrolls a TOTP factor and returns the setup payload for QR display.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when factor enrollment fails.
+    pub fn enroll_totp_factor(
+        &self,
+        user_id: u64,
+        label: &str,
+    ) -> Result<TotpEnrollment, AuthError> {
+        let secret = TotpSecret::generate();
+        self.enroll_totp_factor_with_secret(user_id, label, &secret)
+    }
+
+    /// Enrolls a TOTP factor with explicit secret material.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when factor enrollment fails or user state is missing.
+    pub fn enroll_totp_factor_with_secret(
+        &self,
+        user_id: u64,
+        label: &str,
+        secret: &TotpSecret,
+    ) -> Result<TotpEnrollment, AuthError> {
+        let factor = self.enroll_factor(user_id, FactorType::Totp, label)?;
+        let user_email = {
+            let mut store = self
+                .store
+                .lock()
+                .map_err(|_| AuthError::StoreUnavailable("totp"))?;
+            store
+                .totp_secrets_by_factor_id
+                .insert(factor.id, secret.clone());
+            store
+                .users_by_id
+                .get(&user_id)
+                .ok_or(AuthError::UserNotFound)?
+                .user
+                .email
+                .clone()
+        };
+
+        Ok(totp::build_totp_enrollment(
+            factor,
+            &user_email,
+            &TotpConfig::default(),
+            secret,
+        ))
+    }
+
     /// Returns enabled MFA factors for a user.
     ///
     /// # Errors
@@ -380,6 +434,75 @@ impl AuthService {
             return Err(AuthError::FactorVerificationFailed);
         }
         Ok(result)
+    }
+
+    /// Returns the configured TOTP factor for a user when enrolled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no enabled TOTP factor exists or auth state
+    /// cannot be accessed.
+    pub fn totp_factor_for_user(&self, user_id: u64) -> Result<TotpFactor, AuthError> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("totp"))?;
+        let Some(secret) = store
+            .factor_ids_by_user_id
+            .get(&user_id)
+            .into_iter()
+            .flatten()
+            .find_map(|factor_id| {
+                store
+                    .auth_factors_by_id
+                    .get(factor_id)
+                    .filter(|factor| factor.enabled && factor.factor_type == FactorType::Totp)
+                    .and_then(|factor| store.totp_secrets_by_factor_id.get(&factor.id))
+            })
+        else {
+            return Err(AuthError::TotpSecretMissing);
+        };
+
+        Ok(TotpFactor::new(secret.clone(), TotpConfig::default()))
+    }
+
+    /// Verifies a TOTP code for a user through the generic MFA flow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the TOTP factor is not enrolled or verification
+    /// fails.
+    pub fn verify_totp_code(
+        &self,
+        user: &User,
+        purpose: MfaPurpose,
+        code: &str,
+    ) -> Result<FactorResult, AuthError> {
+        let factor = self.totp_factor_for_user(user.id)?;
+        let ctx = AuthContext {
+            user: user.clone(),
+            purpose,
+        };
+        let challenge = self.begin_factor_challenge(&factor, &ctx)?;
+        self.verify_factor_challenge(
+            &factor,
+            &ctx,
+            FactorResponse {
+                challenge_id: challenge.challenge_id,
+                factor_type: FactorType::Totp,
+                secret: code.to_owned(),
+            },
+        )
+    }
+
+    /// Returns recovery guidance for a TOTP-enrolled user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the user has no TOTP factor.
+    pub fn totp_recovery_path(&self, user_id: u64) -> Result<TotpRecoveryPath, AuthError> {
+        self.ensure_factor_enrolled(user_id, FactorType::Totp)?;
+        Ok(totp::default_totp_recovery_path(user_id))
     }
 
     /// Builds a `Set-Cookie` header value for an authenticated session.
@@ -466,6 +589,8 @@ pub enum AuthError {
     FactorTypeMismatch,
     #[error("MFA factor verification failed")]
     FactorVerificationFailed,
+    #[error("TOTP secret is not available")]
+    TotpSecretMissing,
     #[error("internal auth store is unavailable: {0}")]
     StoreUnavailable(&'static str),
 }
@@ -511,10 +636,10 @@ fn env_bool(name: &str) -> Option<bool> {
 mod tests {
     use super::{
         AuthConfig, AuthContext, AuthError, AuthFactor, AuthService, FactorChallenge,
-        FactorResponse, FactorResult, FactorType, MfaPurpose, Permission, UserRole,
+        FactorResponse, FactorResult, FactorType, MfaPurpose, Permission, TotpSecret, UserRole,
         DEFAULT_SESSION_TTL_SECS,
     };
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn bootstrap_admin_can_login() {
@@ -673,6 +798,74 @@ mod tests {
         assert!(matches!(error, AuthError::FactorNotEnrolled));
     }
 
+    #[test]
+    fn auth_service_enrolls_totp_with_qr_payload() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+
+        let enrollment = auth
+            .enroll_totp_factor_with_secret(
+                user.id,
+                "Authenticator app",
+                &TotpSecret::from_bytes(b"sunbolt-secret".to_vec()),
+            )
+            .expect("TOTP should enroll");
+
+        assert_eq!(enrollment.factor.factor_type, FactorType::Totp);
+        assert!(enrollment.provisioning_uri.starts_with("otpauth://totp/"));
+        assert_eq!(enrollment.qr_code_payload, enrollment.provisioning_uri);
+        assert!(enrollment.secret_base32.len() >= 16);
+    }
+
+    #[test]
+    fn auth_service_verifies_totp_code() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+        auth.enroll_totp_factor_with_secret(
+            user.id,
+            "Authenticator app",
+            &TotpSecret::from_bytes(b"sunbolt-secret".to_vec()),
+        )
+        .expect("TOTP should enroll");
+        let factor = auth
+            .totp_factor_for_user(user.id)
+            .expect("TOTP factor should exist");
+        let code = factor.code_at(now_unix_secs());
+
+        let result = auth
+            .verify_totp_code(&user, MfaPurpose::TerminalStepUp, &code)
+            .expect("TOTP should verify");
+
+        assert!(result.verified);
+    }
+
+    #[test]
+    fn auth_service_exposes_totp_recovery_path() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+        auth.enroll_totp_factor_with_secret(
+            user.id,
+            "Authenticator app",
+            &TotpSecret::from_bytes(b"sunbolt-secret".to_vec()),
+        )
+        .expect("TOTP should enroll");
+
+        let recovery = auth
+            .totp_recovery_path(user.id)
+            .expect("recovery path should be available");
+
+        assert_eq!(recovery.user_id, user.id);
+        assert!(recovery
+            .fallback_factors
+            .contains(&FactorType::RecoveryCode));
+    }
+
     fn test_auth_service() -> AuthService {
         AuthService::new(AuthConfig {
             session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
@@ -714,5 +907,12 @@ mod tests {
                 verified: response.secret == self.expected_secret,
             })
         }
+    }
+
+    fn now_unix_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
     }
 }
