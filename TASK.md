@@ -219,24 +219,24 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Agent Connection
 
-- [ ] Implement agent outbound connection to control plane.
-- [ ] Add heartbeat message.
-- [ ] Track node online/offline status.
-- [ ] Display nodes in UI.
-- [ ] Add node details page.
-- [ ] Add revoke node action.
+- [x] Implement agent outbound connection to control plane.
+- [x] Add heartbeat message.
+- [x] Track node online/offline status.
+- [x] Display nodes in UI.
+- [x] Add node details page.
+- [x] Add revoke node action.
 
 ## Remote Terminal Through Agent
 
-- [ ] Define control-plane-to-agent terminal protocol.
-- [ ] Implement `StartTerminal` command.
-- [ ] Implement `TerminalOutput` event.
-- [ ] Implement `WriteInput` command.
-- [ ] Implement `ResizeTerminal` command.
-- [ ] Implement `CloseTerminal` command.
-- [ ] Route browser WebSocket to selected agent.
-- [ ] Open terminal on selected remote node.
-- [ ] Handle agent disconnect during active terminal.
+- [x] Define control-plane-to-agent terminal protocol.
+- [x] Implement `StartTerminal` command.
+- [x] Implement `TerminalOutput` event.
+- [x] Implement `WriteInput` command.
+- [x] Implement `ResizeTerminal` command.
+- [x] Implement `CloseTerminal` command.
+- [x] Route browser WebSocket to selected agent.
+- [x] Open terminal on selected remote node.
+- [x] Handle agent disconnect during active terminal.
 
 ---
 

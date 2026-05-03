@@ -12,7 +12,7 @@ use std::{
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Extension, Json, Request, State,
+        Extension, Json, Path, Request, State,
     },
     http::{
         header::{COOKIE, SET_COOKIE},
@@ -30,13 +30,17 @@ use serde::{Deserialize, Serialize};
 use sunbolt_audit::{AuditEvent, AuditEventInput, AuditEventKind, AuditLog};
 use sunbolt_auth::{AuthError, AuthService, User, SESSION_COOKIE_NAME};
 use sunbolt_protocol::{
-    TerminalClientMessage, TerminalError as ProtocolTerminalError, TerminalErrorCode, TerminalExit,
-    TerminalServerMessage, TerminalSessionId, TerminalSize as ProtocolTerminalSize,
+    AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalClientMessage,
+    TerminalError as ProtocolTerminalError, TerminalErrorCode, TerminalExit, TerminalServerMessage,
+    TerminalSessionId, TerminalSize as ProtocolTerminalSize,
 };
 use sunbolt_terminal::{
     LocalPtySession, TerminalError, TerminalExitStatus, TerminalSessionState, TerminalSize,
 };
-use tokio::{sync::mpsc, task};
+use tokio::{
+    sync::{mpsc, Mutex as AsyncMutex},
+    task,
+};
 
 const OUTPUT_BUFFER_SIZE: usize = 8192;
 const OUTPUT_CHANNEL_CAPACITY: usize = 32;
@@ -44,6 +48,7 @@ const READ_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 const DEFAULT_MAX_TERMINAL_SESSIONS: usize = 16;
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+const NODE_OFFLINE_AFTER: Duration = Duration::from_secs(90);
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -56,6 +61,8 @@ pub const ACCESS_HISTORY_PATH: &str = "/access/history";
 pub const AUDIT_LOGS_PATH: &str = "/audit/logs";
 pub const ENROLLMENT_TOKENS_PATH: &str = "/nodes/enrollment-tokens";
 pub const AGENT_ENROLL_PATH: &str = "/agent/enroll";
+pub const AGENT_HEARTBEAT_PATH: &str = "/agent/heartbeat";
+pub const NODES_PATH: &str = "/nodes";
 
 /// Returns a stable name for the control plane component.
 #[must_use]
@@ -84,11 +91,21 @@ fn build_router(state: AppState) -> Router {
             get(access_history).layer(auth_layer.clone()),
         )
         .route(AUDIT_LOGS_PATH, get(audit_logs).layer(auth_layer.clone()))
+        .route(NODES_PATH, get(list_nodes).layer(auth_layer.clone()))
+        .route(
+            "/nodes/{node_id}",
+            get(node_details).layer(auth_layer.clone()),
+        )
+        .route(
+            "/nodes/{node_id}/revoke",
+            post(revoke_node).layer(auth_layer.clone()),
+        )
         .route(
             ENROLLMENT_TOKENS_PATH,
             post(create_enrollment_token).layer(auth_layer),
         )
         .route(AGENT_ENROLL_PATH, post(agent_enroll))
+        .route(AGENT_HEARTBEAT_PATH, post(agent_heartbeat))
         .with_state(state)
 }
 
@@ -99,6 +116,7 @@ struct AppState {
     auth: AuthService,
     audit: AuditLog,
     node_enrollment: NodeEnrollmentRegistry,
+    agent_connections: AgentConnectionRegistry,
 }
 
 impl AppState {
@@ -109,6 +127,7 @@ impl AppState {
             auth: AuthService::from_env(),
             audit: AuditLog::default(),
             node_enrollment: NodeEnrollmentRegistry::default(),
+            agent_connections: AgentConnectionRegistry::default(),
         }
     }
 }
@@ -276,6 +295,9 @@ struct NodeRecord {
 #[serde(rename_all = "snake_case")]
 enum NodeStatus {
     Enrolled,
+    Online,
+    Offline,
+    Revoked,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -288,6 +310,62 @@ struct NodeCredentialRecord {
 struct NodeHeartbeatRecord {
     node_id: u64,
     status: NodeStatus,
+    received_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct RegisteredAgentConnection {
+    command_tx: mpsc::Sender<AgentTerminalCommand>,
+    event_rx: Arc<AsyncMutex<mpsc::Receiver<AgentTerminalEvent>>>,
+}
+
+#[derive(Clone, Default)]
+struct AgentConnectionRegistry {
+    inner: Arc<Mutex<HashMap<String, RegisteredAgentConnection>>>,
+}
+
+impl AgentConnectionRegistry {
+    #[cfg(test)]
+    fn register(
+        &self,
+        node_id: impl Into<String>,
+        command_tx: mpsc::Sender<AgentTerminalCommand>,
+        event_rx: mpsc::Receiver<AgentTerminalEvent>,
+    ) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                node_id.into(),
+                RegisteredAgentConnection {
+                    command_tx,
+                    event_rx: Arc::new(AsyncMutex::new(event_rx)),
+                },
+            );
+    }
+
+    fn connection(&self, node_id: &str) -> Option<RegisteredAgentConnection> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(node_id)
+            .cloned()
+    }
+
+    fn disconnect(&self, node_id: &str) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(node_id);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
 }
 
 impl NodeEnrollmentRegistry {
@@ -361,12 +439,127 @@ impl NodeEnrollmentRegistry {
         state.heartbeats.push(NodeHeartbeatRecord {
             node_id: id,
             status: NodeStatus::Enrolled,
+            received_at: Instant::now(),
         });
 
         Ok(AgentEnrollmentResponse {
             node_id,
             credential_fingerprint,
         })
+    }
+
+    fn heartbeat(&self, request: AgentHeartbeatRequest) -> Result<NodeView, NodeConnectionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let node_index = state
+            .nodes
+            .iter()
+            .position(|node| node.node_id == request.node_id)
+            .ok_or(NodeConnectionError::UnknownNode)?;
+        let node = &state.nodes[node_index];
+        if node.status == NodeStatus::Revoked {
+            return Err(NodeConnectionError::Revoked);
+        }
+        let credential_matches = state.credentials.iter().any(|credential| {
+            credential.node_id == node.id
+                && credential.credential_fingerprint == request.credential_fingerprint
+        });
+        if !credential_matches {
+            return Err(NodeConnectionError::InvalidCredential);
+        }
+
+        state.nodes[node_index].hostname = request.hostname;
+        state.nodes[node_index].os = request.os;
+        state.nodes[node_index].architecture = request.architecture;
+        state.nodes[node_index].agent_version = request.agent_version;
+        state.nodes[node_index].status = NodeStatus::Online;
+        let node_id = state.nodes[node_index].id;
+        state.heartbeats.push(NodeHeartbeatRecord {
+            node_id,
+            status: NodeStatus::Online,
+            received_at: Instant::now(),
+        });
+
+        Ok(node_view(&state.nodes[node_index], Some(Instant::now())))
+    }
+
+    fn list_nodes(&self) -> Vec<NodeView> {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .nodes
+            .iter()
+            .map(|node| node_view(node, latest_heartbeat_at(&state, node.id)))
+            .collect()
+    }
+
+    fn node_details(&self, node_id: &str) -> Option<NodeView> {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .map(|node| node_view(node, latest_heartbeat_at(&state, node.id)))
+    }
+
+    fn revoke_node(&self, node_id: &str) -> Result<NodeView, NodeConnectionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let node_index = state
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or(NodeConnectionError::UnknownNode)?;
+        state.nodes[node_index].status = NodeStatus::Revoked;
+        Ok(node_view(
+            &state.nodes[node_index],
+            latest_heartbeat_at(&state, state.nodes[node_index].id),
+        ))
+    }
+
+    fn node_is_online(&self, node_id: &str) -> bool {
+        self.node_details(node_id)
+            .is_some_and(|node| node.status == NodeStatus::Online)
+    }
+}
+
+fn latest_heartbeat_at(state: &NodeEnrollmentState, node_id: u64) -> Option<Instant> {
+    state
+        .heartbeats
+        .iter()
+        .filter(|heartbeat| heartbeat.node_id == node_id && heartbeat.status != NodeStatus::Revoked)
+        .max_by_key(|heartbeat| heartbeat.received_at)
+        .map(|heartbeat| heartbeat.received_at)
+}
+
+fn node_view(node: &NodeRecord, last_heartbeat_at: Option<Instant>) -> NodeView {
+    let status = match node.status {
+        NodeStatus::Online
+            if last_heartbeat_at
+                .is_some_and(|received_at| received_at.elapsed() >= NODE_OFFLINE_AFTER) =>
+        {
+            NodeStatus::Offline
+        }
+        status => status,
+    };
+
+    NodeView {
+        node_id: node.node_id.clone(),
+        display_name: node.display_name.clone(),
+        hostname: node.hostname.clone(),
+        os: node.os.clone(),
+        architecture: node.architecture.clone(),
+        agent_version: node.agent_version.clone(),
+        status,
     }
 }
 
@@ -403,6 +596,27 @@ struct EnrollmentTokenResponse {
     enrollment_command: String,
 }
 
+#[derive(Debug, Serialize)]
+struct NodeListResponse {
+    nodes: Vec<NodeView>,
+}
+
+#[derive(Debug, Serialize)]
+struct NodeDetailsResponse {
+    node: NodeView,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+struct NodeView {
+    node_id: String,
+    display_name: String,
+    hostname: String,
+    os: String,
+    architecture: String,
+    agent_version: String,
+    status: NodeStatus,
+}
+
 #[derive(Debug, Deserialize)]
 struct AgentEnrollmentRequest {
     token: String,
@@ -417,6 +631,22 @@ struct AgentEnrollmentRequest {
 struct AgentEnrollmentResponse {
     node_id: String,
     credential_fingerprint: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentHeartbeatRequest {
+    node_id: String,
+    credential_fingerprint: String,
+    hostname: String,
+    os: String,
+    architecture: String,
+    agent_version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentHeartbeatResponse {
+    accepted: bool,
+    node: NodeView,
 }
 
 #[derive(Debug, Serialize)]
@@ -520,6 +750,60 @@ async fn create_enrollment_token(
     Json(state.node_enrollment.create_token(&user.0, ttl))
 }
 
+async fn list_nodes(State(state): State<AppState>) -> impl IntoResponse {
+    Json(NodeListResponse {
+        nodes: state.node_enrollment.list_nodes(),
+    })
+}
+
+async fn node_details(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+) -> impl IntoResponse {
+    match state.node_enrollment.node_details(&node_id) {
+        Some(node) => Json(NodeDetailsResponse { node }).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "node not found",
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn revoke_node(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(node_id): Path<String>,
+) -> impl IntoResponse {
+    match state.node_enrollment.revoke_node(&node_id) {
+        Ok(node) => {
+            state.agent_connections.disconnect(&node_id);
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::NodeRevoked,
+                actor_email: Some(user.0.email),
+                message: format!("node {node_id} revoked"),
+            });
+            Json(NodeDetailsResponse { node }).into_response()
+        }
+        Err(NodeConnectionError::UnknownNode) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "node not found",
+            }),
+        )
+            .into_response(),
+        Err(NodeConnectionError::InvalidCredential | NodeConnectionError::Revoked) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "node is not allowed",
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn agent_enroll(
     State(state): State<AppState>,
     Json(request): Json<AgentEnrollmentRequest>,
@@ -541,6 +825,33 @@ async fn agent_enroll(
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
                 error: "invalid enrollment token",
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn agent_heartbeat(
+    State(state): State<AppState>,
+    Json(request): Json<AgentHeartbeatRequest>,
+) -> impl IntoResponse {
+    match state.node_enrollment.heartbeat(request) {
+        Ok(node) => Json(AgentHeartbeatResponse {
+            accepted: true,
+            node,
+        })
+        .into_response(),
+        Err(NodeConnectionError::UnknownNode | NodeConnectionError::InvalidCredential) => (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "invalid node credential",
+            }),
+        )
+            .into_response(),
+        Err(NodeConnectionError::Revoked) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "node revoked",
             }),
         )
             .into_response(),
@@ -638,6 +949,19 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
 
     let initial_size = terminal_size_from_protocol(start.initial_size);
     let session_id = next_session_id();
+
+    if let Some(node_id) = start.node_id {
+        handle_remote_terminal_socket(
+            socket,
+            state,
+            actor_email,
+            node_id,
+            session_id,
+            start.initial_size,
+        )
+        .await;
+        return;
+    }
 
     let session = match LocalPtySession::spawn_default_shell(initial_size) {
         Ok(session) => Arc::new(session),
@@ -833,6 +1157,263 @@ async fn receive_start_message(socket: &mut WebSocket) -> Option<StartTerminal> 
             }
         },
         Some(Err(_)) | None => None,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn handle_remote_terminal_socket(
+    mut socket: WebSocket,
+    state: AppState,
+    actor_email: String,
+    node_id: NodeId,
+    session_id: TerminalSessionId,
+    initial_size: ProtocolTerminalSize,
+) {
+    let node_id_text = node_id.0.clone();
+    if !state.node_enrollment.node_is_online(&node_id_text) {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalFailed,
+            actor_email: Some(actor_email),
+            message: format!("remote terminal requested for unavailable node {node_id_text}"),
+        });
+        let _ = send_server_message(
+            &mut socket,
+            TerminalServerMessage::Error {
+                session_id: Some(session_id),
+                error: protocol_error_text(
+                    TerminalErrorCode::TerminalUnavailable,
+                    "agent node is not online",
+                ),
+            },
+        )
+        .await;
+        return;
+    }
+
+    let Some(connection) = state.agent_connections.connection(&node_id_text) else {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalFailed,
+            actor_email: Some(actor_email),
+            message: format!("remote terminal requested without agent channel {node_id_text}"),
+        });
+        let _ = send_server_message(
+            &mut socket,
+            TerminalServerMessage::Error {
+                session_id: Some(session_id),
+                error: protocol_error_text(
+                    TerminalErrorCode::TerminalUnavailable,
+                    "agent connection is not active",
+                ),
+            },
+        )
+        .await;
+        return;
+    };
+
+    if connection
+        .command_tx
+        .send(AgentTerminalCommand::StartTerminal {
+            session_id: session_id.clone(),
+            size: initial_size,
+        })
+        .await
+        .is_err()
+    {
+        state.agent_connections.disconnect(&node_id_text);
+        let _ = send_server_message(
+            &mut socket,
+            TerminalServerMessage::Error {
+                session_id: Some(session_id),
+                error: protocol_error_text(
+                    TerminalErrorCode::TerminalUnavailable,
+                    "agent connection dropped",
+                ),
+            },
+        )
+        .await;
+        return;
+    }
+
+    let (mut sender, mut receiver) = socket.split();
+    let mut event_rx = connection.event_rx.lock().await;
+    let mut terminal_opened = false;
+    let mut terminal_failed = false;
+
+    loop {
+        tokio::select! {
+            event = event_rx.recv() => {
+                let Some(event) = event else {
+                    terminal_failed = true;
+                    let _ = send_split_server_message(
+                        &mut sender,
+                        TerminalServerMessage::Error {
+                            session_id: Some(session_id.clone()),
+                            error: protocol_error_text(
+                                TerminalErrorCode::TerminalUnavailable,
+                                "agent disconnected during terminal session",
+                            ),
+                        },
+                    )
+                    .await;
+                    break;
+                };
+                let message = agent_event_to_browser_message(event, &node_id);
+                if matches!(message, TerminalServerMessage::Started { .. }) {
+                    terminal_opened = true;
+                    state.audit.record(AuditEventInput {
+                        kind: AuditEventKind::TerminalOpened,
+                        actor_email: Some(actor_email.clone()),
+                        message: format!("remote terminal session {} opened on {node_id_text}", session_id.0),
+                    });
+                }
+                if matches!(message, TerminalServerMessage::Error { .. }) {
+                    terminal_failed = true;
+                }
+                let is_terminal_exit = matches!(message, TerminalServerMessage::Exited { .. });
+                if send_split_server_message(&mut sender, message).await.is_err() {
+                    break;
+                }
+                if is_terminal_exit {
+                    break;
+                }
+            }
+            incoming = receiver.next() => {
+                match incoming {
+                    Some(Ok(message)) => {
+                        if !handle_remote_client_frame(&connection.command_tx, &session_id, message, &mut sender).await {
+                            break;
+                        }
+                    }
+                    Some(Err(_)) | None => break,
+                }
+            }
+        }
+    }
+
+    let _ = connection
+        .command_tx
+        .send(AgentTerminalCommand::CloseTerminal {
+            session_id: session_id.clone(),
+        })
+        .await;
+    if terminal_failed {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalFailed,
+            actor_email: Some(actor_email),
+            message: format!("remote terminal session {} failed", session_id.0),
+        });
+    } else if terminal_opened {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalClosed,
+            actor_email: Some(actor_email),
+            message: format!("remote terminal session {} closed", session_id.0),
+        });
+    }
+}
+
+async fn handle_remote_client_frame(
+    command_tx: &mpsc::Sender<AgentTerminalCommand>,
+    active_session_id: &TerminalSessionId,
+    message: Message,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> bool {
+    let message = match parse_client_message(message) {
+        Ok(message) => message,
+        Err(error) => {
+            let _ = send_split_server_message(
+                sender,
+                TerminalServerMessage::Error {
+                    session_id: Some(active_session_id.clone()),
+                    error,
+                },
+            )
+            .await;
+            return true;
+        }
+    };
+
+    let command = match message {
+        TerminalClientMessage::Input { session_id, data } => {
+            if !session_id_matches(&session_id, active_session_id, sender).await {
+                return true;
+            }
+            AgentTerminalCommand::WriteInput { session_id, data }
+        }
+        TerminalClientMessage::Resize { session_id, size } => {
+            if !session_id_matches(&session_id, active_session_id, sender).await {
+                return true;
+            }
+            AgentTerminalCommand::ResizeTerminal { session_id, size }
+        }
+        TerminalClientMessage::Close { session_id } => {
+            if !session_id_matches(&session_id, active_session_id, sender).await {
+                return true;
+            }
+            let _ = command_tx
+                .send(AgentTerminalCommand::CloseTerminal { session_id })
+                .await;
+            return false;
+        }
+        TerminalClientMessage::Ping { nonce } => {
+            let _ = send_split_server_message(sender, TerminalServerMessage::Pong { nonce }).await;
+            return true;
+        }
+        TerminalClientMessage::Start { .. } => {
+            let _ = send_split_server_message(
+                sender,
+                TerminalServerMessage::Error {
+                    session_id: Some(active_session_id.clone()),
+                    error: protocol_error_text(
+                        TerminalErrorCode::InvalidMessage,
+                        "terminal session is already started",
+                    ),
+                },
+            )
+            .await;
+            return true;
+        }
+    };
+
+    if command_tx.send(command).await.is_err() {
+        let _ = send_split_server_message(
+            sender,
+            TerminalServerMessage::Error {
+                session_id: Some(active_session_id.clone()),
+                error: protocol_error_text(
+                    TerminalErrorCode::TerminalUnavailable,
+                    "agent connection dropped",
+                ),
+            },
+        )
+        .await;
+        return false;
+    }
+
+    true
+}
+
+fn agent_event_to_browser_message(
+    event: AgentTerminalEvent,
+    node_id: &NodeId,
+) -> TerminalServerMessage {
+    match event {
+        AgentTerminalEvent::TerminalStarted { session_id, size } => {
+            TerminalServerMessage::Started {
+                session_id,
+                node_id: Some(node_id.clone()),
+                size,
+            }
+        }
+        AgentTerminalEvent::TerminalOutput { session_id, data } => {
+            TerminalServerMessage::Output { session_id, data }
+        }
+        AgentTerminalEvent::TerminalExited { session_id, exit } => {
+            TerminalServerMessage::Exited { session_id, exit }
+        }
+        AgentTerminalEvent::TerminalError { session_id, error } => TerminalServerMessage::Error {
+            session_id: Some(session_id),
+            error,
+        },
     }
 }
 
@@ -1088,6 +1669,13 @@ enum EnrollmentError {
     TokenExpired,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum NodeConnectionError {
+    UnknownNode,
+    InvalidCredential,
+    Revoked,
+}
+
 fn random_token() -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut bytes = [0_u8; 32];
@@ -1143,9 +1731,10 @@ fn env_duration_secs(name: &str) -> Option<Duration> {
 mod tests {
     use super::{
         authorize_terminal_request, build_router, component_name, exit_message,
-        parse_client_message, terminal_size_from_protocol, AppState, NodeEnrollmentRegistry,
-        TerminalSessionConfig, TerminalSessionRegistry, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH,
-        AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, ENROLLMENT_TOKENS_PATH,
+        parse_client_message, terminal_size_from_protocol, AgentConnectionRegistry, AppState,
+        NodeEnrollmentRegistry, TerminalSessionConfig, TerminalSessionRegistry,
+        ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
+        AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, ENROLLMENT_TOKENS_PATH, NODES_PATH,
         SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
     };
     use axum::{
@@ -1157,11 +1746,13 @@ mod tests {
     use std::{process::Command, sync::Arc, time::Duration};
     use sunbolt_auth::{AuthConfig, AuthService};
     use sunbolt_protocol::{
-        TerminalClientMessage, TerminalServerMessage, TerminalSessionId, TerminalSize,
+        AgentTerminalCommand, AgentTerminalEvent, TerminalClientMessage, TerminalError,
+        TerminalErrorCode, TerminalServerMessage, TerminalSessionId, TerminalSize,
     };
     use sunbolt_terminal::{
         LocalPtySession, TerminalExitStatus, TerminalSessionState, TerminalSize as PtyTerminalSize,
     };
+    use tokio::sync::mpsc;
     use tower::ServiceExt;
 
     #[test]
@@ -1525,6 +2116,180 @@ mod tests {
         assert_eq!(reused_response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn agent_heartbeat_marks_node_online_and_nodes_are_listed() {
+        let router = test_router();
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+        let enrollment = enroll_test_agent(&router, &cookie).await;
+
+        let heartbeat_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AGENT_HEARTBEAT_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "node_id": enrollment.node_id,
+                            "credential_fingerprint": enrollment.credential_fingerprint,
+                            "hostname": "host-a",
+                            "os": "linux",
+                            "architecture": "x86_64",
+                            "agent_version": "0.1.0"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(heartbeat_response.status(), StatusCode::OK);
+
+        let nodes_response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(NODES_PATH)
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(nodes_response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(nodes_response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        assert_eq!(payload["nodes"][0]["status"], "online");
+    }
+
+    #[tokio::test]
+    async fn node_details_and_revoke_are_authenticated() {
+        let router = test_router();
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+        let enrollment = enroll_test_agent(&router, &cookie).await;
+
+        let details_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("{NODES_PATH}/{}", enrollment.node_id))
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(details_response.status(), StatusCode::OK);
+
+        let revoke_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("{NODES_PATH}/{}/revoke", enrollment.node_id))
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(revoke_response.status(), StatusCode::OK);
+
+        let heartbeat_response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AGENT_HEARTBEAT_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "node_id": enrollment.node_id,
+                            "credential_fingerprint": enrollment.credential_fingerprint,
+                            "hostname": "host-a",
+                            "os": "linux",
+                            "architecture": "x86_64",
+                            "agent_version": "0.1.0"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(heartbeat_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn agent_terminal_events_map_to_browser_messages() {
+        let session_id = TerminalSessionId("remote-1".to_owned());
+        let output = super::agent_event_to_browser_message(
+            AgentTerminalEvent::TerminalOutput {
+                session_id: session_id.clone(),
+                data: "hello\n".to_owned(),
+            },
+            &sunbolt_protocol::NodeId("node-1".to_owned()),
+        );
+
+        assert_eq!(
+            output,
+            TerminalServerMessage::Output {
+                session_id: session_id.clone(),
+                data: "hello\n".to_owned(),
+            }
+        );
+
+        let error = super::agent_event_to_browser_message(
+            AgentTerminalEvent::TerminalError {
+                session_id: session_id.clone(),
+                error: TerminalError {
+                    code: TerminalErrorCode::TerminalUnavailable,
+                    message: "agent disconnected".to_owned(),
+                },
+            },
+            &sunbolt_protocol::NodeId("node-1".to_owned()),
+        );
+
+        assert!(matches!(
+            error,
+            TerminalServerMessage::Error {
+                session_id: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn agent_connection_registry_tracks_active_channel() {
+        let registry = AgentConnectionRegistry::default();
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let (_event_tx, event_rx) = mpsc::channel(1);
+        registry.register("node-1", command_tx, event_rx);
+
+        let connection = registry
+            .connection("node-1")
+            .expect("agent connection should be registered");
+        connection
+            .command_tx
+            .send(AgentTerminalCommand::CloseTerminal {
+                session_id: TerminalSessionId("remote-1".to_owned()),
+            })
+            .await
+            .expect("command should send");
+
+        assert_eq!(registry.len(), 1);
+        assert!(matches!(
+            command_rx.recv().await,
+            Some(AgentTerminalCommand::CloseTerminal { .. })
+        ));
+
+        registry.disconnect("node-1");
+        assert_eq!(registry.len(), 0);
+    }
+
     #[test]
     fn viewer_cannot_open_terminal() {
         let auth = test_auth_service();
@@ -1579,6 +2344,7 @@ mod tests {
             auth,
             audit: sunbolt_audit::AuditLog::default(),
             node_enrollment: NodeEnrollmentRegistry::default(),
+            agent_connections: AgentConnectionRegistry::default(),
         })
     }
 
@@ -1603,6 +2369,72 @@ mod tests {
         )
         .expect("viewer should be created");
         auth
+    }
+
+    struct TestEnrollment {
+        node_id: String,
+        credential_fingerprint: String,
+    }
+
+    async fn enroll_test_agent(router: &axum::Router, cookie: &str) -> TestEnrollment {
+        let token_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(ENROLLMENT_TOKENS_PATH)
+                    .header(header::COOKIE, cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"expires_in_secs": 300}).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(token_response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(token_response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        let token = payload["token"].as_str().expect("token should be present");
+
+        let enroll_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AGENT_ENROLL_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "token": token,
+                            "node_name": "node-a",
+                            "hostname": "host-a",
+                            "os": "linux",
+                            "architecture": "x86_64",
+                            "agent_version": "0.1.0"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(enroll_response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(enroll_response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+
+        TestEnrollment {
+            node_id: payload["node_id"]
+                .as_str()
+                .expect("node id should be present")
+                .to_owned(),
+            credential_fingerprint: payload["credential_fingerprint"]
+                .as_str()
+                .expect("credential fingerprint should be present")
+                .to_owned(),
+        }
     }
 
     async fn login_and_get_cookie(router: &axum::Router, email: &str, password: &str) -> String {

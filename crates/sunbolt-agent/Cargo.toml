@@ -8,6 +8,8 @@ version.workspace = true
 [dependencies]
 serde = { workspace = true }
 sunbolt-common = { path = "../sunbolt-common" }
+sunbolt-protocol = { path = "../sunbolt-protocol" }
+sunbolt-terminal = { path = "../sunbolt-terminal" }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["signal"] }
 

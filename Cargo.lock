@@ -2299,6 +2299,8 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "sunbolt-common",
+ "sunbolt-protocol",
+ "sunbolt-terminal",
  "thiserror 2.0.18",
  "tokio",
 ]

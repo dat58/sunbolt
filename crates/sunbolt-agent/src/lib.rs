@@ -1,6 +1,13 @@
-use std::{env, future::Future};
+use std::{collections::HashMap, env, future::Future};
 
 use serde::{Deserialize, Serialize};
+use sunbolt_protocol::{
+    AgentTerminalCommand, AgentTerminalEvent, TerminalExit, TerminalSessionId,
+    TerminalSize as ProtocolTerminalSize,
+};
+use sunbolt_terminal::{
+    LocalPtySession, TerminalError as PtyTerminalError, TerminalExitStatus, TerminalSize,
+};
 use thiserror::Error;
 
 const DEFAULT_CONTROL_PLANE_URL: &str = "http://127.0.0.1:3000";
@@ -68,6 +75,212 @@ pub struct AgentEnrollmentRequest {
     pub os: String,
     pub architecture: String,
     pub agent_version: String,
+}
+
+/// Enrollment response returned by the control plane.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentEnrollmentResponse {
+    pub node_id: String,
+    pub credential_fingerprint: String,
+}
+
+/// Heartbeat status reported by an agent connection.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentHeartbeatStatus {
+    Online,
+}
+
+/// Agent heartbeat message sent to the control plane.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentHeartbeatMessage {
+    pub node_id: String,
+    pub credential_fingerprint: String,
+    pub hostname: String,
+    pub os: String,
+    pub architecture: String,
+    pub agent_version: String,
+    pub status: AgentHeartbeatStatus,
+}
+
+impl AgentHeartbeatMessage {
+    #[must_use]
+    pub fn from_node_identity(
+        node_id: impl Into<String>,
+        credential_fingerprint: impl Into<String>,
+        node_info: &LocalNodeInfo,
+    ) -> Self {
+        Self {
+            node_id: node_id.into(),
+            credential_fingerprint: credential_fingerprint.into(),
+            hostname: node_info.hostname.clone(),
+            os: node_info.os.clone(),
+            architecture: node_info.architecture.clone(),
+            agent_version: node_info.agent_version.clone(),
+            status: AgentHeartbeatStatus::Online,
+        }
+    }
+
+    #[must_use]
+    pub const fn endpoint_path() -> &'static str {
+        "/agent/heartbeat"
+    }
+}
+
+/// Prepared outbound connection state for an enrolled agent.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AgentConnection {
+    control_plane_url: String,
+    heartbeat: AgentHeartbeatMessage,
+}
+
+impl AgentConnection {
+    #[must_use]
+    pub fn new(
+        config: &AgentConfig,
+        enrollment: &AgentEnrollmentResponse,
+        node_info: &LocalNodeInfo,
+    ) -> Self {
+        Self {
+            control_plane_url: config.control_plane_url.clone(),
+            heartbeat: AgentHeartbeatMessage::from_node_identity(
+                enrollment.node_id.clone(),
+                enrollment.credential_fingerprint.clone(),
+                node_info,
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn heartbeat_endpoint(&self) -> String {
+        join_url_path(
+            &self.control_plane_url,
+            AgentHeartbeatMessage::endpoint_path(),
+        )
+    }
+
+    #[must_use]
+    pub const fn heartbeat_message(&self) -> &AgentHeartbeatMessage {
+        &self.heartbeat
+    }
+}
+
+/// Agent-side terminal command handler backed by local PTY sessions.
+pub struct AgentTerminalRuntime {
+    sessions: HashMap<TerminalSessionId, LocalPtySession>,
+}
+
+impl AgentTerminalRuntime {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            sessions: HashMap::new(),
+        }
+    }
+
+    /// Applies a control-plane terminal command to the agent host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the command targets a missing session, starts a
+    /// duplicate session, or the local PTY operation fails.
+    pub fn handle_command(
+        &mut self,
+        command: AgentTerminalCommand,
+    ) -> Result<Option<AgentTerminalEvent>, AgentError> {
+        match command {
+            AgentTerminalCommand::StartTerminal { session_id, size } => {
+                if self.sessions.contains_key(&session_id) {
+                    return Err(AgentError::TerminalSessionExists(session_id.0));
+                }
+                let session =
+                    LocalPtySession::spawn_default_shell(terminal_size_from_protocol(size))?;
+                self.sessions.insert(session_id.clone(), session);
+                Ok(Some(AgentTerminalEvent::TerminalStarted {
+                    session_id,
+                    size,
+                }))
+            }
+            AgentTerminalCommand::WriteInput { session_id, data } => {
+                self.session(&session_id)?.write_input(data.as_bytes())?;
+                Ok(None)
+            }
+            AgentTerminalCommand::ResizeTerminal { session_id, size } => {
+                self.session(&session_id)?
+                    .resize(terminal_size_from_protocol(size))?;
+                Ok(None)
+            }
+            AgentTerminalCommand::CloseTerminal { session_id } => {
+                let session = self
+                    .sessions
+                    .remove(&session_id)
+                    .ok_or_else(|| AgentError::TerminalSessionMissing(session_id.0.clone()))?;
+                session.close()?;
+                Ok(Some(AgentTerminalEvent::TerminalExited {
+                    session_id,
+                    exit: TerminalExit { status: None },
+                }))
+            }
+        }
+    }
+
+    /// Reads PTY output for a remote terminal session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session is missing or the PTY read fails.
+    pub fn read_output(
+        &self,
+        session_id: &TerminalSessionId,
+        buffer: &mut [u8],
+    ) -> Result<Option<AgentTerminalEvent>, AgentError> {
+        let read = self.session(session_id)?.read_output(buffer)?;
+        if read == 0 {
+            return Ok(None);
+        }
+
+        Ok(Some(AgentTerminalEvent::TerminalOutput {
+            session_id: session_id.clone(),
+            data: String::from_utf8_lossy(&buffer[..read]).into_owned(),
+        }))
+    }
+
+    /// Polls the local PTY process exit status for a remote terminal session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session is missing or PTY process polling
+    /// fails.
+    pub fn poll_exit(
+        &mut self,
+        session_id: &TerminalSessionId,
+    ) -> Result<Option<AgentTerminalEvent>, AgentError> {
+        let Some(exit) = self.session(session_id)?.try_wait_exit()? else {
+            return Ok(None);
+        };
+        self.sessions.remove(session_id);
+        Ok(Some(AgentTerminalEvent::TerminalExited {
+            session_id: session_id.clone(),
+            exit: terminal_exit(exit),
+        }))
+    }
+
+    #[must_use]
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    fn session(&self, session_id: &TerminalSessionId) -> Result<&LocalPtySession, AgentError> {
+        self.sessions
+            .get(session_id)
+            .ok_or_else(|| AgentError::TerminalSessionMissing(session_id.0.clone()))
+    }
+}
+
+impl Default for AgentTerminalRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AgentEnrollmentRequest {
@@ -198,6 +411,24 @@ impl AgentRuntime {
 pub enum AgentError {
     #[error("agent enrollment token is not configured")]
     MissingEnrollmentToken,
+    #[error("terminal session {0} already exists")]
+    TerminalSessionExists(String),
+    #[error("terminal session {0} does not exist")]
+    TerminalSessionMissing(String),
+    #[error("agent terminal PTY operation failed: {0}")]
+    Terminal(#[from] PtyTerminalError),
+}
+
+fn join_url_path(base: &str, path: &str) -> String {
+    format!("{}{}", base.trim_end_matches('/'), path)
+}
+
+fn terminal_size_from_protocol(size: ProtocolTerminalSize) -> TerminalSize {
+    TerminalSize::new(size.cols.max(1), size.rows.max(1))
+}
+
+fn terminal_exit(exit: TerminalExitStatus) -> TerminalExit {
+    TerminalExit { status: exit.code }
 }
 
 fn default_node_name(lookup: &mut impl FnMut(&str) -> Option<String>) -> String {
@@ -218,8 +449,12 @@ fn hostname_from_lookup(lookup: &mut impl FnMut(&str) -> Option<String>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        component_name, AgentConfig, AgentEnrollmentRequest, AgentRuntime, LocalNodeInfo, LogLevel,
-        DEFAULT_CONTROL_PLANE_URL,
+        component_name, AgentConfig, AgentConnection, AgentEnrollmentRequest,
+        AgentEnrollmentResponse, AgentHeartbeatMessage, AgentHeartbeatStatus, AgentRuntime,
+        AgentTerminalRuntime, LocalNodeInfo, LogLevel, DEFAULT_CONTROL_PLANE_URL,
+    };
+    use sunbolt_protocol::{
+        AgentTerminalCommand, AgentTerminalEvent, TerminalSessionId, TerminalSize,
     };
     use tokio::sync::oneshot;
 
@@ -262,6 +497,86 @@ mod tests {
         assert!(!info.os.is_empty());
         assert!(!info.architecture.is_empty());
         assert_eq!(info.agent_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn heartbeat_message_uses_enrolled_node_identity() {
+        let info = LocalNodeInfo {
+            hostname: "host-a".to_owned(),
+            os: "linux".to_owned(),
+            architecture: "x86_64".to_owned(),
+            agent_version: "0.1.0".to_owned(),
+        };
+
+        let heartbeat =
+            AgentHeartbeatMessage::from_node_identity("node-1", "dev-fingerprint", &info);
+
+        assert_eq!(heartbeat.node_id, "node-1");
+        assert_eq!(heartbeat.credential_fingerprint, "dev-fingerprint");
+        assert_eq!(heartbeat.hostname, "host-a");
+        assert_eq!(heartbeat.status, AgentHeartbeatStatus::Online);
+        assert_eq!(AgentHeartbeatMessage::endpoint_path(), "/agent/heartbeat");
+    }
+
+    #[test]
+    fn agent_connection_builds_heartbeat_endpoint() {
+        let config = AgentConfig {
+            control_plane_url: "https://control.example.test/".to_owned(),
+            node_name: "node-a".to_owned(),
+            enrollment_token: None,
+        };
+        let enrollment = AgentEnrollmentResponse {
+            node_id: "node-1".to_owned(),
+            credential_fingerprint: "dev-fingerprint".to_owned(),
+        };
+        let info = LocalNodeInfo {
+            hostname: "host-a".to_owned(),
+            os: "linux".to_owned(),
+            architecture: "x86_64".to_owned(),
+            agent_version: "0.1.0".to_owned(),
+        };
+
+        let connection = AgentConnection::new(&config, &enrollment, &info);
+
+        assert_eq!(
+            connection.heartbeat_endpoint(),
+            "https://control.example.test/agent/heartbeat"
+        );
+        assert_eq!(connection.heartbeat_message().node_id, "node-1");
+    }
+
+    #[test]
+    fn agent_terminal_runtime_reports_missing_session() {
+        let mut runtime = AgentTerminalRuntime::new();
+        let result = runtime.handle_command(AgentTerminalCommand::CloseTerminal {
+            session_id: TerminalSessionId("remote-1".to_owned()),
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn agent_terminal_runtime_starts_and_closes_session_when_shell_is_available() {
+        let mut runtime = AgentTerminalRuntime::new();
+        let session_id = TerminalSessionId("remote-1".to_owned());
+        let started = runtime.handle_command(AgentTerminalCommand::StartTerminal {
+            session_id: session_id.clone(),
+            size: TerminalSize { cols: 80, rows: 24 },
+        });
+        let Ok(Some(AgentTerminalEvent::TerminalStarted { .. })) = started else {
+            return;
+        };
+        assert_eq!(runtime.session_count(), 1);
+
+        let closed = runtime
+            .handle_command(AgentTerminalCommand::CloseTerminal { session_id })
+            .expect("close command should succeed");
+
+        assert!(matches!(
+            closed,
+            Some(AgentTerminalEvent::TerminalExited { .. })
+        ));
+        assert_eq!(runtime.session_count(), 0);
     }
 
     #[test]

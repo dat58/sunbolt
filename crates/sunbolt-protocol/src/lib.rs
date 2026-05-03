@@ -68,6 +68,49 @@ pub enum TerminalServerMessage {
     },
 }
 
+/// Control-plane-to-agent terminal commands.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentTerminalCommand {
+    StartTerminal {
+        session_id: TerminalSessionId,
+        size: TerminalSize,
+    },
+    WriteInput {
+        session_id: TerminalSessionId,
+        data: String,
+    },
+    ResizeTerminal {
+        session_id: TerminalSessionId,
+        size: TerminalSize,
+    },
+    CloseTerminal {
+        session_id: TerminalSessionId,
+    },
+}
+
+/// Agent-to-control-plane terminal events.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentTerminalEvent {
+    TerminalStarted {
+        session_id: TerminalSessionId,
+        size: TerminalSize,
+    },
+    TerminalOutput {
+        session_id: TerminalSessionId,
+        data: String,
+    },
+    TerminalExited {
+        session_id: TerminalSessionId,
+        exit: TerminalExit,
+    },
+    TerminalError {
+        session_id: TerminalSessionId,
+        error: TerminalError,
+    },
+}
+
 /// Terminal process exit details.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TerminalExit {
@@ -96,8 +139,9 @@ pub enum TerminalErrorCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        NodeId, TerminalClientMessage, TerminalError, TerminalErrorCode, TerminalExit,
-        TerminalServerMessage, TerminalSessionId, TerminalSize, PROTOCOL_VERSION,
+        AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalClientMessage, TerminalError,
+        TerminalErrorCode, TerminalExit, TerminalServerMessage, TerminalSessionId, TerminalSize,
+        PROTOCOL_VERSION,
     };
     use serde_json::json;
 
@@ -284,6 +328,88 @@ mod tests {
             pong,
             TerminalServerMessage::Pong {
                 nonce: "nonce-1".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn serializes_agent_terminal_commands() {
+        let command = AgentTerminalCommand::StartTerminal {
+            session_id: TerminalSessionId("remote-1".to_owned()),
+            size: TerminalSize {
+                cols: 100,
+                rows: 30,
+            },
+        };
+
+        let value = serde_json::to_value(command).expect("agent command should serialize");
+
+        assert_eq!(
+            value,
+            json!({
+                "type": "start_terminal",
+                "session_id": "remote-1",
+                "size": {
+                    "cols": 100,
+                    "rows": 30
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn deserializes_agent_terminal_commands() {
+        let command: AgentTerminalCommand = serde_json::from_value(json!({
+            "type": "write_input",
+            "session_id": "remote-1",
+            "data": "whoami\n"
+        }))
+        .expect("agent input command should deserialize");
+
+        assert_eq!(
+            command,
+            AgentTerminalCommand::WriteInput {
+                session_id: TerminalSessionId("remote-1".to_owned()),
+                data: "whoami\n".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn serializes_agent_terminal_events() {
+        let event = AgentTerminalEvent::TerminalOutput {
+            session_id: TerminalSessionId("remote-1".to_owned()),
+            data: "sunbolt\n".to_owned(),
+        };
+
+        let value = serde_json::to_value(event).expect("agent event should serialize");
+
+        assert_eq!(
+            value,
+            json!({
+                "type": "terminal_output",
+                "session_id": "remote-1",
+                "data": "sunbolt\n"
+            })
+        );
+    }
+
+    #[test]
+    fn deserializes_agent_terminal_events() {
+        let event: AgentTerminalEvent = serde_json::from_value(json!({
+            "type": "terminal_exited",
+            "session_id": "remote-1",
+            "exit": {
+                "status": 0
+            }
+        }))
+        .expect("agent exit event should deserialize");
+
+        assert_eq!(
+            event,
+            AgentTerminalEvent::TerminalExited {
+                session_id: TerminalSessionId("remote-1".to_owned()),
+                exit: TerminalExit { status: Some(0) },
             }
         );
     }

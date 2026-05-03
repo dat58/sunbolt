@@ -3,6 +3,7 @@ use sunbolt_protocol::TerminalSize;
 
 /// DOM id used by the browser terminal bridge.
 pub const TERMINAL_MOUNT_ID: &str = "sunbolt-terminal";
+pub const TERMINAL_NODE_INPUT_ID: &str = "sunbolt-terminal-node";
 
 /// WebSocket endpoint used by the terminal UI.
 pub const TERMINAL_WS_ENDPOINT: &str = "/terminal/ws";
@@ -27,6 +28,8 @@ const FALLBACK_OUTPUT_CLASS: &str =
     "box-border h-[calc(100%-72px)] m-0 overflow-auto whitespace-pre-wrap font-mono text-sm";
 const FALLBACK_INPUT_CLASS: &str =
     "mt-3 h-14 w-full resize-none box-border border border-terminal-border bg-terminal-surface font-mono text-sm text-terminal-text";
+const TEXT_INPUT_CLASS: &str =
+    "h-8 w-52 border border-terminal-border bg-terminal-bg px-2 text-xs text-terminal-text outline-none focus:border-lightning-cyan";
 
 /// Returns the display title for the web UI shell.
 #[must_use]
@@ -135,6 +138,12 @@ pub fn TerminalPageBody() -> Element {
                 class: "flex items-center justify-end border-b border-terminal-border bg-terminal-surface px-4",
                 div {
                     class: "flex items-center gap-2",
+                    input {
+                        id: TERMINAL_NODE_INPUT_ID,
+                        class: TEXT_INPUT_CLASS,
+                        placeholder: "node id",
+                        value: ""
+                    }
                     div {
                         id: "sunbolt-terminal-status",
                         class: STATUS_CONNECTING_CLASS,
@@ -262,16 +271,40 @@ pub fn NodesPage() -> Element {
                             th { class: "p-2 text-left font-medium", "Hostname" }
                             th { class: "p-2 text-left font-medium", "OS" }
                             th { class: "p-2 text-left font-medium", "Status" }
+                            th { class: "p-2 text-left font-medium", "Actions" }
                         }
                     }
                     tbody {
                         tr {
-                            td { class: "p-2 text-terminal-muted", "Pending" }
+                            td { class: "p-2 text-terminal-text", "node-1" }
                             td { class: "p-2 text-terminal-text", "host-a" }
                             td { class: "p-2 text-terminal-text", "linux" }
-                            td { class: "p-2 text-lightning-cyan", "enrolled" }
+                            td { class: "p-2 text-lightning-cyan", "online" }
+                            td {
+                                class: "flex gap-2 p-2",
+                                button { class: ACTION_BUTTON_CLASS, "Details" }
+                                button { class: ACTION_BUTTON_CLASS, "Revoke" }
+                            }
                         }
                     }
+                }
+            }
+            div {
+                class: "border border-terminal-border bg-terminal-surface p-4",
+                h3 {
+                    class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
+                    "Node Details"
+                }
+                dl {
+                    class: "grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm",
+                    dt { class: "text-terminal-muted", "Node" }
+                    dd { class: "m-0 text-terminal-text", "node-1" }
+                    dt { class: "text-terminal-muted", "Agent" }
+                    dd { class: "m-0 text-terminal-text", "0.1.0" }
+                    dt { class: "text-terminal-muted", "Architecture" }
+                    dd { class: "m-0 text-terminal-text", "x86_64" }
+                    dt { class: "text-terminal-muted", "Remote Terminal" }
+                    dd { class: "m-0 text-terminal-muted", "Enter the node id in the terminal toolbar to route through the agent." }
                 }
             }
         }
@@ -289,6 +322,7 @@ pub fn terminal_bridge_script() -> String {
   const status = document.getElementById("sunbolt-terminal-status");
   const closeButton = document.getElementById("sunbolt-terminal-close");
   const reconnectButton = document.getElementById("sunbolt-terminal-reconnect");
+  const nodeInput = document.getElementById("{node_input_id}");
   if (!mount || mount.dataset.sunboltTerminalReady === "true") {{
     return;
   }}
@@ -361,7 +395,7 @@ pub fn terminal_bridge_script() -> String {
       resize();
       send({{
         type: "start",
-        node_id: null,
+        node_id: nodeInput && nodeInput.value.trim() ? nodeInput.value.trim() : null,
         initial_size: {{ cols, rows }}
       }});
     }});
@@ -450,6 +484,7 @@ pub fn terminal_bridge_script() -> String {
 }})();
 "##,
         mount_id = TERMINAL_MOUNT_ID,
+        node_input_id = TERMINAL_NODE_INPUT_ID,
         endpoint = TERMINAL_WS_ENDPOINT,
         cols = DEFAULT_TERMINAL_SIZE.cols,
         rows = DEFAULT_TERMINAL_SIZE.rows,
@@ -465,7 +500,10 @@ pub fn terminal_bridge_script() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{app_title, terminal_bridge_script, TERMINAL_MOUNT_ID, TERMINAL_WS_ENDPOINT};
+    use super::{
+        app_title, terminal_bridge_script, TERMINAL_MOUNT_ID, TERMINAL_NODE_INPUT_ID,
+        TERMINAL_WS_ENDPOINT,
+    };
 
     #[test]
     fn app_title_uses_product_name() {
@@ -478,6 +516,7 @@ mod tests {
 
         assert!(script.contains(TERMINAL_WS_ENDPOINT));
         assert!(script.contains(TERMINAL_MOUNT_ID));
+        assert!(script.contains(TERMINAL_NODE_INPUT_ID));
         assert!(script.contains(r#"type: "start""#));
         assert!(script.contains(r#"type: "input""#));
         assert!(script.contains(r#"type: "resize""#));
