@@ -215,6 +215,7 @@ Main UI areas:
 - Prefer dependency injection through structs and traits.
 - Keep protocol types versionable and serializable.
 - Avoid premature optimization, but design for backpressure in terminal streams.
+- Keep crate code split into clean, focused modules. Do not place substantial implementation in `lib.rs`; use `lib.rs` mainly for module declarations and public re-exports. Prefer responsibility-based modules such as `config.rs`, `error.rs`, `routes/`, `state.rs`, `session.rs`, `registry.rs`, `protocol.rs`, and `service.rs` when a crate grows beyond a small skeleton.
 
 ## Testing Rules
 
