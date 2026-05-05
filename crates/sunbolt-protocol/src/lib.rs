@@ -37,6 +37,12 @@ pub enum TerminalClientMessage {
     Close {
         session_id: TerminalSessionId,
     },
+    Detach {
+        session_id: TerminalSessionId,
+    },
+    Reattach {
+        session_id: TerminalSessionId,
+    },
     Ping {
         nonce: String,
     },
@@ -58,6 +64,14 @@ pub enum TerminalServerMessage {
     Exited {
         session_id: TerminalSessionId,
         exit: TerminalExit,
+    },
+    Detached {
+        session_id: TerminalSessionId,
+    },
+    Reattached {
+        session_id: TerminalSessionId,
+        node_id: Option<NodeId>,
+        size: TerminalSize,
     },
     Error {
         session_id: Option<TerminalSessionId>,
@@ -226,6 +240,32 @@ mod tests {
             }
         );
 
+        let detach: TerminalClientMessage = serde_json::from_value(json!({
+            "type": "detach",
+            "session_id": "session-1"
+        }))
+        .expect("detach message should deserialize");
+
+        assert_eq!(
+            detach,
+            TerminalClientMessage::Detach {
+                session_id: TerminalSessionId("session-1".to_owned()),
+            }
+        );
+
+        let reattach: TerminalClientMessage = serde_json::from_value(json!({
+            "type": "reattach",
+            "session_id": "session-1"
+        }))
+        .expect("reattach message should deserialize");
+
+        assert_eq!(
+            reattach,
+            TerminalClientMessage::Reattach {
+                session_id: TerminalSessionId("session-1".to_owned()),
+            }
+        );
+
         let ping: TerminalClientMessage = serde_json::from_value(json!({
             "type": "ping",
             "nonce": "nonce-1"
@@ -274,6 +314,39 @@ mod tests {
                 "type": "output",
                 "session_id": "session-1",
                 "data": "hello\n"
+            })
+        );
+
+        let detached = serde_json::to_value(TerminalServerMessage::Detached {
+            session_id: TerminalSessionId("session-1".to_owned()),
+        })
+        .expect("detached message should serialize");
+
+        assert_eq!(
+            detached,
+            json!({
+                "type": "detached",
+                "session_id": "session-1"
+            })
+        );
+
+        let reattached = serde_json::to_value(TerminalServerMessage::Reattached {
+            session_id: TerminalSessionId("session-1".to_owned()),
+            node_id: None,
+            size: TerminalSize { cols: 80, rows: 24 },
+        })
+        .expect("reattached message should serialize");
+
+        assert_eq!(
+            reattached,
+            json!({
+                "type": "reattached",
+                "session_id": "session-1",
+                "node_id": null,
+                "size": {
+                    "cols": 80,
+                    "rows": 24
+                }
             })
         );
     }

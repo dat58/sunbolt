@@ -16,6 +16,9 @@ pub enum TerminalSessionState {
     Created,
     Starting,
     Active,
+    Detached,
+    Reconnecting,
+    Reattached,
     Closing,
     Closed,
     Failed,
@@ -29,7 +32,19 @@ impl TerminalSessionState {
             (self, next),
             (Self::Created, Self::Starting)
                 | (Self::Starting, Self::Active | Self::Failed)
-                | (Self::Active, Self::Closing | Self::Failed)
+                | (Self::Active, Self::Detached | Self::Closing | Self::Failed)
+                | (
+                    Self::Detached,
+                    Self::Reconnecting | Self::Closing | Self::Failed
+                )
+                | (
+                    Self::Reconnecting,
+                    Self::Reattached | Self::Closing | Self::Failed
+                )
+                | (
+                    Self::Reattached,
+                    Self::Active | Self::Closing | Self::Failed
+                )
                 | (Self::Closing | Self::Failed, Self::Closed)
         )
     }
@@ -329,12 +344,21 @@ mod tests {
         assert!(TerminalSessionState::Created.can_transition_to(TerminalSessionState::Starting));
         assert!(TerminalSessionState::Starting.can_transition_to(TerminalSessionState::Active));
         assert!(TerminalSessionState::Active.can_transition_to(TerminalSessionState::Closing));
+        assert!(TerminalSessionState::Active.can_transition_to(TerminalSessionState::Detached));
+        assert!(
+            TerminalSessionState::Detached.can_transition_to(TerminalSessionState::Reconnecting)
+        );
+        assert!(
+            TerminalSessionState::Reconnecting.can_transition_to(TerminalSessionState::Reattached)
+        );
+        assert!(TerminalSessionState::Reattached.can_transition_to(TerminalSessionState::Active));
         assert!(TerminalSessionState::Closing.can_transition_to(TerminalSessionState::Closed));
         assert!(TerminalSessionState::Active.can_transition_to(TerminalSessionState::Failed));
         assert!(TerminalSessionState::Failed.can_transition_to(TerminalSessionState::Closed));
 
         assert!(!TerminalSessionState::Created.can_transition_to(TerminalSessionState::Active));
         assert!(!TerminalSessionState::Closed.can_transition_to(TerminalSessionState::Active));
+        assert!(!TerminalSessionState::Detached.can_transition_to(TerminalSessionState::Active));
     }
 
     #[test]

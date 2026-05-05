@@ -297,7 +297,7 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Terminal Reliability
 
-- [ ] Add detach/reattach model.
+- [x] Add detach/reattach model.
 - [ ] Keep PTY alive during short browser disconnect.
 - [ ] Add reconnect token.
 - [ ] Add session cleanup worker.

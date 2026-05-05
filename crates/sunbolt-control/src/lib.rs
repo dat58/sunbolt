@@ -193,6 +193,9 @@ impl TerminalSessionRegistry {
     fn set_state(&self, session_id: &TerminalSessionId, state: TerminalSessionState) {
         if let Ok(mut sessions) = self.inner.lock() {
             if let Some(session) = sessions.get_mut(session_id) {
+                if !session.state.can_transition_to(state) && session.state != state {
+                    return;
+                }
                 session.state = state;
             }
         }
@@ -1468,6 +1471,32 @@ async fn handle_remote_client_frame(
                 .await;
             return false;
         }
+        TerminalClientMessage::Detach { session_id } => {
+            if !session_id_matches(&session_id, active_session_id, sender).await {
+                return true;
+            }
+            let _ =
+                send_split_server_message(sender, TerminalServerMessage::Detached { session_id })
+                    .await;
+            return false;
+        }
+        TerminalClientMessage::Reattach { session_id } => {
+            if !session_id_matches(&session_id, active_session_id, sender).await {
+                return true;
+            }
+            let _ = send_split_server_message(
+                sender,
+                TerminalServerMessage::Error {
+                    session_id: Some(session_id),
+                    error: protocol_error_text(
+                        TerminalErrorCode::InvalidMessage,
+                        "remote terminal reattach is not available yet",
+                    ),
+                },
+            )
+            .await;
+            return true;
+        }
         TerminalClientMessage::Ping { nonce } => {
             let _ = send_split_server_message(sender, TerminalServerMessage::Pong { nonce }).await;
             return true;
@@ -1602,6 +1631,18 @@ async fn handle_client_frame(
             .await;
             false
         }
+        TerminalClientMessage::Detach { session_id } => {
+            if !session_id_matches(&session_id, active_session_id, sender).await {
+                return true;
+            }
+            detach_local_terminal(registry, active_session_id, sender).await
+        }
+        TerminalClientMessage::Reattach { session_id } => {
+            if !session_id_matches(&session_id, active_session_id, sender).await {
+                return true;
+            }
+            reattach_local_terminal(registry, active_session_id, sender).await
+        }
         TerminalClientMessage::Ping { nonce } => {
             let _ = send_split_server_message(sender, TerminalServerMessage::Pong { nonce }).await;
             true
@@ -1621,6 +1662,42 @@ async fn handle_client_frame(
             true
         }
     }
+}
+
+async fn detach_local_terminal(
+    registry: &TerminalSessionRegistry,
+    active_session_id: &TerminalSessionId,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> bool {
+    registry.set_state(active_session_id, TerminalSessionState::Detached);
+    let _ = send_split_server_message(
+        sender,
+        TerminalServerMessage::Detached {
+            session_id: active_session_id.clone(),
+        },
+    )
+    .await;
+    false
+}
+
+async fn reattach_local_terminal(
+    registry: &TerminalSessionRegistry,
+    active_session_id: &TerminalSessionId,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> bool {
+    registry.set_state(active_session_id, TerminalSessionState::Reconnecting);
+    registry.set_state(active_session_id, TerminalSessionState::Reattached);
+    let _ = send_split_server_message(
+        sender,
+        TerminalServerMessage::Reattached {
+            session_id: active_session_id.clone(),
+            node_id: None,
+            size: ProtocolTerminalSize { cols: 80, rows: 24 },
+        },
+    )
+    .await;
+    registry.set_state(active_session_id, TerminalSessionState::Active);
+    true
 }
 
 async fn session_id_matches(
@@ -1914,6 +1991,16 @@ mod tests {
         assert_eq!(
             registry.state(&session_id),
             Some(TerminalSessionState::Active)
+        );
+        registry.set_state(&session_id, TerminalSessionState::Detached);
+        assert_eq!(
+            registry.state(&session_id),
+            Some(TerminalSessionState::Detached)
+        );
+        registry.set_state(&session_id, TerminalSessionState::Active);
+        assert_eq!(
+            registry.state(&session_id),
+            Some(TerminalSessionState::Detached)
         );
 
         assert!(!registry.insert(
