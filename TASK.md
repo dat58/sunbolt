@@ -308,11 +308,11 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Audit Hardening
 
-- [ ] Add append-only audit behavior.
-- [ ] Add `previous_hash` column.
-- [ ] Add `event_hash` column.
-- [ ] Verify audit chain integrity.
-- [ ] Add audit export.
+- [x] Add append-only audit behavior.
+- [x] Add `previous_hash` column.
+- [x] Add `event_hash` column.
+- [x] Verify audit chain integrity.
+- [x] Add audit export.
 
 ## Security Hardening
 
