@@ -31,8 +31,9 @@ use sunbolt_audit::{AuditEvent, AuditEventInput, AuditEventKind, AuditLog};
 use sunbolt_auth::{AuthError, AuthService, FactorType, User, SESSION_COOKIE_NAME};
 use sunbolt_protocol::{
     AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalClientMessage,
-    TerminalError as ProtocolTerminalError, TerminalErrorCode, TerminalExit, TerminalServerMessage,
-    TerminalSessionId, TerminalSize as ProtocolTerminalSize,
+    TerminalError as ProtocolTerminalError, TerminalErrorCode, TerminalExit,
+    TerminalReconnectToken, TerminalServerMessage, TerminalSessionId,
+    TerminalSize as ProtocolTerminalSize,
 };
 use sunbolt_terminal::{
     LocalPtySession, TerminalError, TerminalExitStatus, TerminalSessionState, TerminalSize,
@@ -166,6 +167,7 @@ struct TerminalSessionRegistry {
 struct TrackedTerminalSession {
     session: Arc<LocalPtySession>,
     output_tx: broadcast::Sender<TerminalServerMessage>,
+    reconnect_token: TerminalReconnectToken,
     state: TerminalSessionState,
     last_activity: Instant,
     size: ProtocolTerminalSize,
@@ -192,6 +194,7 @@ impl TerminalSessionRegistry {
             TrackedTerminalSession {
                 session,
                 output_tx: output_tx.clone(),
+                reconnect_token: TerminalReconnectToken(random_token()),
                 state: TerminalSessionState::Starting,
                 last_activity: Instant::now(),
                 size,
@@ -218,10 +221,12 @@ impl TerminalSessionRegistry {
     fn reattach(
         &self,
         session_id: &TerminalSessionId,
+        reconnect_token: &TerminalReconnectToken,
     ) -> Option<(
         Arc<LocalPtySession>,
         broadcast::Receiver<TerminalServerMessage>,
         ProtocolTerminalSize,
+        TerminalReconnectToken,
     )> {
         let Ok(mut sessions) = self.inner.lock() else {
             return None;
@@ -233,13 +238,26 @@ impl TerminalSessionRegistry {
         ) {
             return None;
         }
+        if &tracked.reconnect_token != reconnect_token {
+            return None;
+        }
+        tracked.reconnect_token = TerminalReconnectToken(random_token());
         tracked.state = TerminalSessionState::Reconnecting;
         tracked.last_activity = Instant::now();
         Some((
             Arc::clone(&tracked.session),
             tracked.output_tx.subscribe(),
             tracked.size,
+            tracked.reconnect_token.clone(),
         ))
+    }
+
+    fn reconnect_token(&self, session_id: &TerminalSessionId) -> Option<TerminalReconnectToken> {
+        self.inner.lock().ok().and_then(|sessions| {
+            sessions
+                .get(session_id)
+                .map(|session| session.reconnect_token.clone())
+        })
     }
 
     fn touch(&self, session_id: &TerminalSessionId) {
@@ -1131,8 +1149,12 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
 
     let start = match handshake {
         TerminalHandshake::Start(start) => start,
-        TerminalHandshake::Reattach { session_id } => {
-            handle_local_terminal_reattach(socket, state, actor_email, session_id).await;
+        TerminalHandshake::Reattach {
+            session_id,
+            reconnect_token,
+        } => {
+            handle_local_terminal_reattach(socket, state, actor_email, session_id, reconnect_token)
+                .await;
             return;
         }
     };
@@ -1205,6 +1227,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
             session_id: session_id.clone(),
             node_id: start.node_id,
             size: start.initial_size,
+            reconnect_token: state.sessions.reconnect_token(&session_id),
         },
     )
     .await
@@ -1336,8 +1359,11 @@ async fn handle_local_terminal_reattach(
     state: AppState,
     actor_email: String,
     session_id: TerminalSessionId,
+    reconnect_token: TerminalReconnectToken,
 ) {
-    let Some((session, mut output_rx, size)) = state.sessions.reattach(&session_id) else {
+    let Some((session, mut output_rx, size, next_reconnect_token)) =
+        state.sessions.reattach(&session_id, &reconnect_token)
+    else {
         let mut socket = socket;
         let _ = send_server_message(
             &mut socket,
@@ -1363,6 +1389,7 @@ async fn handle_local_terminal_reattach(
             session_id: session_id.clone(),
             node_id: None,
             size,
+            reconnect_token: Some(next_reconnect_token),
         },
     )
     .await;
@@ -1493,7 +1520,10 @@ struct StartTerminal {
 
 enum TerminalHandshake {
     Start(StartTerminal),
-    Reattach { session_id: TerminalSessionId },
+    Reattach {
+        session_id: TerminalSessionId,
+        reconnect_token: TerminalReconnectToken,
+    },
 }
 
 async fn receive_start_message(socket: &mut WebSocket) -> Option<TerminalHandshake> {
@@ -1506,9 +1536,13 @@ async fn receive_start_message(socket: &mut WebSocket) -> Option<TerminalHandsha
                 node_id,
                 initial_size,
             })),
-            Ok(TerminalClientMessage::Reattach { session_id }) => {
-                Some(TerminalHandshake::Reattach { session_id })
-            }
+            Ok(TerminalClientMessage::Reattach {
+                session_id,
+                reconnect_token,
+            }) => Some(TerminalHandshake::Reattach {
+                session_id,
+                reconnect_token,
+            }),
             Ok(_) => {
                 let _ = send_server_message(
                     socket,
@@ -1742,7 +1776,7 @@ async fn handle_remote_client_frame(
                     .await;
             return false;
         }
-        TerminalClientMessage::Reattach { session_id } => {
+        TerminalClientMessage::Reattach { session_id, .. } => {
             if !session_id_matches(&session_id, active_session_id, sender).await {
                 return true;
             }
@@ -1807,6 +1841,7 @@ fn agent_event_to_browser_message(
                 session_id,
                 node_id: Some(node_id.clone()),
                 size,
+                reconnect_token: None,
             }
         }
         AgentTerminalEvent::TerminalOutput { session_id, data } => {
@@ -1900,7 +1935,7 @@ async fn handle_client_frame(
             }
             detach_local_terminal(registry, active_session_id, sender).await
         }
-        TerminalClientMessage::Reattach { session_id } => {
+        TerminalClientMessage::Reattach { session_id, .. } => {
             if !session_id_matches(&session_id, active_session_id, sender).await {
                 return true;
             }
@@ -1956,6 +1991,7 @@ async fn reattach_local_terminal(
             session_id: active_session_id.clone(),
             node_id: None,
             size: ProtocolTerminalSize { cols: 80, rows: 24 },
+            reconnect_token: registry.reconnect_token(active_session_id),
         },
     )
     .await;
@@ -2196,7 +2232,8 @@ mod tests {
     use sunbolt_auth::{AuthConfig, AuthService};
     use sunbolt_protocol::{
         AgentTerminalCommand, AgentTerminalEvent, TerminalClientMessage, TerminalError,
-        TerminalErrorCode, TerminalServerMessage, TerminalSessionId, TerminalSize,
+        TerminalErrorCode, TerminalReconnectToken, TerminalServerMessage, TerminalSessionId,
+        TerminalSize,
     };
     use sunbolt_terminal::{
         LocalPtySession, TerminalExitStatus, TerminalSessionState, TerminalSize as PtyTerminalSize,
@@ -2267,7 +2304,16 @@ mod tests {
             registry.state(&session_id),
             Some(TerminalSessionState::Detached)
         );
-        assert!(registry.reattach(&session_id).is_some());
+        let reconnect_token = registry
+            .reconnect_token(&session_id)
+            .expect("reconnect token should be issued");
+        assert!(registry
+            .reattach(
+                &session_id,
+                &TerminalReconnectToken("wrong-token".to_owned())
+            )
+            .is_none());
+        assert!(registry.reattach(&session_id, &reconnect_token).is_some());
         registry.set_state(&session_id, TerminalSessionState::Reattached);
         registry.set_state(&session_id, TerminalSessionState::Active);
         assert_eq!(

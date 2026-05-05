@@ -528,6 +528,7 @@ pub fn terminal_bridge_script() -> String {
   let sessionId = null;
   let cols = {cols};
   let rows = {rows};
+  let reconnectToken = null;
   let socket = null;
   let terminal = null;
   let fallbackInput = null;
@@ -549,7 +550,7 @@ pub fn terminal_bridge_script() -> String {
       closeButton.disabled = state === "closed";
     }}
     if (reconnectButton) {{
-      reconnectButton.disabled = true;
+      reconnectButton.disabled = !(state === "closed" && sessionId && reconnectToken);
     }}
   }};
 
@@ -582,7 +583,7 @@ pub fn terminal_bridge_script() -> String {
     }}
   }};
 
-  const connect = () => {{
+  const connect = (reattach = false) => {{
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${{protocol}}//${{window.location.host}}{endpoint}`;
     socket = new WebSocket(url);
@@ -590,18 +591,33 @@ pub fn terminal_bridge_script() -> String {
     socket.addEventListener("open", () => {{
       setStatus("Connected", "connected");
       resize();
-      send({{
-        type: "start",
-        node_id: nodeInput && nodeInput.value.trim() ? nodeInput.value.trim() : null,
-        initial_size: {{ cols, rows }}
-      }});
+      if (reattach && sessionId && reconnectToken) {{
+        send({{
+          type: "reattach",
+          session_id: sessionId,
+          reconnect_token: reconnectToken
+        }});
+      }} else {{
+        send({{
+          type: "start",
+          node_id: nodeInput && nodeInput.value.trim() ? nodeInput.value.trim() : null,
+          initial_size: {{ cols, rows }}
+        }});
+      }}
     }});
 
     socket.addEventListener("message", (event) => {{
       const message = JSON.parse(event.data);
       if (message.type === "started") {{
         sessionId = message.session_id;
+        reconnectToken = message.reconnect_token || null;
         setStatus("Active", "connected");
+      }} else if (message.type === "reattached") {{
+        sessionId = message.session_id;
+        reconnectToken = message.reconnect_token || reconnectToken;
+        setStatus("Active", "connected");
+      }} else if (message.type === "detached") {{
+        setStatus("Closed", "closed");
       }} else if (message.type === "output") {{
         writeOutput(message.data);
       }} else if (message.type === "error") {{
@@ -632,6 +648,7 @@ pub fn terminal_bridge_script() -> String {
     if (sessionId) {{
       send({{ type: "close", session_id: sessionId }});
     }}
+    reconnectToken = null;
     if (socket) {{
       socket.close();
     }}
@@ -690,9 +707,18 @@ pub fn terminal_bridge_script() -> String {
   if (mfaButton) {{
     mfaButton.addEventListener("click", completeStepUpMfa);
   }}
+  if (reconnectButton) {{
+    reconnectButton.addEventListener("click", () => {{
+      if (!sessionId || !reconnectToken) {{
+        return;
+      }}
+      setStatus("Reconnecting", "connecting");
+      connect(true);
+    }});
+  }}
   window.addEventListener("beforeunload", () => {{
-    if (sessionId) {{
-      send({{ type: "close", session_id: sessionId }});
+    if (sessionId && reconnectToken) {{
+      send({{ type: "detach", session_id: sessionId }});
     }}
   }});
   connect();

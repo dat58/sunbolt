@@ -299,7 +299,7 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 - [x] Add detach/reattach model.
 - [x] Keep PTY alive during short browser disconnect.
-- [ ] Add reconnect token.
+- [x] Add reconnect token.
 - [ ] Add session cleanup worker.
 - [ ] Add per-user session limit.
 - [ ] Add per-node session limit.

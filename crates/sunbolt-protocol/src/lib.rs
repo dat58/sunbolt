@@ -7,6 +7,10 @@ pub const PROTOCOL_VERSION: u16 = 1;
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct TerminalSessionId(pub String);
 
+/// Bearer token used to reattach a detached browser terminal session.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct TerminalReconnectToken(pub String);
+
 /// Stable identifier for a managed node.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub String);
@@ -42,6 +46,7 @@ pub enum TerminalClientMessage {
     },
     Reattach {
         session_id: TerminalSessionId,
+        reconnect_token: TerminalReconnectToken,
     },
     Ping {
         nonce: String,
@@ -56,6 +61,7 @@ pub enum TerminalServerMessage {
         session_id: TerminalSessionId,
         node_id: Option<NodeId>,
         size: TerminalSize,
+        reconnect_token: Option<TerminalReconnectToken>,
     },
     Output {
         session_id: TerminalSessionId,
@@ -72,6 +78,7 @@ pub enum TerminalServerMessage {
         session_id: TerminalSessionId,
         node_id: Option<NodeId>,
         size: TerminalSize,
+        reconnect_token: Option<TerminalReconnectToken>,
     },
     Error {
         session_id: Option<TerminalSessionId>,
@@ -154,8 +161,8 @@ pub enum TerminalErrorCode {
 mod tests {
     use super::{
         AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalClientMessage, TerminalError,
-        TerminalErrorCode, TerminalExit, TerminalServerMessage, TerminalSessionId, TerminalSize,
-        PROTOCOL_VERSION,
+        TerminalErrorCode, TerminalExit, TerminalReconnectToken, TerminalServerMessage,
+        TerminalSessionId, TerminalSize, PROTOCOL_VERSION,
     };
     use serde_json::json;
 
@@ -255,7 +262,8 @@ mod tests {
 
         let reattach: TerminalClientMessage = serde_json::from_value(json!({
             "type": "reattach",
-            "session_id": "session-1"
+            "session_id": "session-1",
+            "reconnect_token": "token-1"
         }))
         .expect("reattach message should deserialize");
 
@@ -263,6 +271,7 @@ mod tests {
             reattach,
             TerminalClientMessage::Reattach {
                 session_id: TerminalSessionId("session-1".to_owned()),
+                reconnect_token: TerminalReconnectToken("token-1".to_owned()),
             }
         );
 
@@ -286,6 +295,7 @@ mod tests {
             session_id: TerminalSessionId("session-1".to_owned()),
             node_id: None,
             size: TerminalSize { cols: 80, rows: 24 },
+            reconnect_token: Some(TerminalReconnectToken("token-1".to_owned())),
         })
         .expect("started message should serialize");
 
@@ -295,6 +305,7 @@ mod tests {
                 "type": "started",
                 "session_id": "session-1",
                 "node_id": null,
+                "reconnect_token": "token-1",
                 "size": {
                     "cols": 80,
                     "rows": 24
@@ -334,6 +345,7 @@ mod tests {
             session_id: TerminalSessionId("session-1".to_owned()),
             node_id: None,
             size: TerminalSize { cols: 80, rows: 24 },
+            reconnect_token: Some(TerminalReconnectToken("token-2".to_owned())),
         })
         .expect("reattached message should serialize");
 
@@ -343,6 +355,7 @@ mod tests {
                 "type": "reattached",
                 "session_id": "session-1",
                 "node_id": null,
+                "reconnect_token": "token-2",
                 "size": {
                     "cols": 80,
                     "rows": 24
