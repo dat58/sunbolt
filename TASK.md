@@ -260,11 +260,11 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Recovery Codes
 
-- [ ] Add recovery code generation.
-- [ ] Store hashed recovery codes.
-- [ ] Verify recovery code.
-- [ ] Invalidate used recovery code.
-- [ ] Add regenerate recovery codes action.
+- [x] Add recovery code generation.
+- [x] Store hashed recovery codes.
+- [x] Verify recovery code.
+- [x] Invalidate used recovery code.
+- [x] Add regenerate recovery codes action.
 
 ## WebAuthn / Passkeys
 

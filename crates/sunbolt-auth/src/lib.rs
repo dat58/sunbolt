@@ -14,12 +14,14 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 mod mfa;
+mod recovery_codes;
 mod totp;
 
 pub use mfa::{
     AuthContext, AuthFactor, AuthFactorEnrollment, FactorChallenge, FactorResponse, FactorResult,
     FactorType, MfaPurpose,
 };
+pub use recovery_codes::RecoveryCodeBatch;
 pub use totp::{TotpConfig, TotpEnrollment, TotpFactor, TotpRecoveryPath, TotpSecret};
 
 const DEFAULT_SESSION_TTL_SECS: u64 = 8 * 60 * 60;
@@ -103,6 +105,7 @@ struct AuthStore {
     sessions_by_token: HashMap<String, SessionRecord>,
     auth_factors_by_id: HashMap<u64, AuthFactorEnrollment>,
     factor_ids_by_user_id: HashMap<u64, Vec<u64>>,
+    recovery_codes_by_factor_id: HashMap<u64, Vec<recovery_codes::StoredRecoveryCode>>,
     totp_secrets_by_factor_id: HashMap<u64, TotpSecret>,
 }
 
@@ -374,6 +377,82 @@ impl AuthService {
         ))
     }
 
+    /// Generates and stores recovery codes for a user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when factor enrollment fails or auth state cannot be
+    /// accessed.
+    pub fn generate_recovery_codes(&self, user_id: u64) -> Result<RecoveryCodeBatch, AuthError> {
+        let factor = self.enroll_factor(
+            user_id,
+            recovery_codes::recovery_code_factor_type(),
+            recovery_codes::recovery_code_factor_label(),
+        )?;
+        let codes = recovery_codes::generate_recovery_codes();
+        let records = recovery_codes::recovery_code_records(&codes);
+        self.store_recovery_code_records(factor.id, records)?;
+        Ok(recovery_codes::build_recovery_code_batch(factor, codes))
+    }
+
+    /// Replaces all recovery codes for a user with a fresh batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the user does not exist or auth state cannot be
+    /// accessed.
+    pub fn regenerate_recovery_codes(&self, user_id: u64) -> Result<RecoveryCodeBatch, AuthError> {
+        let factor = self
+            .recovery_code_factor_for_user(user_id)?
+            .unwrap_or_else(|| AuthFactorEnrollment {
+                id: 0,
+                user_id,
+                factor_type: FactorType::RecoveryCode,
+                label: recovery_codes::recovery_code_factor_label().to_owned(),
+                enabled: true,
+            });
+        if factor.id == 0 {
+            return self.generate_recovery_codes(user_id);
+        }
+
+        let codes = recovery_codes::generate_recovery_codes();
+        let records = recovery_codes::recovery_code_records(&codes);
+        self.store_recovery_code_records(factor.id, records)?;
+        Ok(recovery_codes::build_recovery_code_batch(factor, codes))
+    }
+
+    /// Verifies and invalidates a one-time recovery code.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the user has no recovery code factor, the code is
+    /// invalid or already used, or auth state cannot be accessed.
+    pub fn verify_recovery_code(&self, user: &User, code: &str) -> Result<FactorResult, AuthError> {
+        let Some(factor) = self.recovery_code_factor_for_user(user.id)? else {
+            return Err(AuthError::RecoveryCodeInvalid);
+        };
+        let code_hash = recovery_codes::hash_recovery_code(code);
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("recovery-codes"))?;
+        let Some(records) = store.recovery_codes_by_factor_id.get_mut(&factor.id) else {
+            return Err(AuthError::RecoveryCodeInvalid);
+        };
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.hash == code_hash && !record.used)
+        else {
+            return Err(AuthError::RecoveryCodeInvalid);
+        };
+        record.used = true;
+        Ok(FactorResult {
+            user_id: user.id,
+            factor_type: FactorType::RecoveryCode,
+            verified: true,
+        })
+    }
+
     /// Returns enabled MFA factors for a user.
     ///
     /// # Errors
@@ -558,6 +637,37 @@ impl AuthService {
             Err(AuthError::FactorNotEnrolled)
         }
     }
+
+    fn recovery_code_factor_for_user(
+        &self,
+        user_id: u64,
+    ) -> Result<Option<AuthFactorEnrollment>, AuthError> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("recovery-codes"))?;
+        Ok(store
+            .factor_ids_by_user_id
+            .get(&user_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|factor_id| store.auth_factors_by_id.get(factor_id))
+            .find(|factor| factor.enabled && factor.factor_type == FactorType::RecoveryCode)
+            .cloned())
+    }
+
+    fn store_recovery_code_records(
+        &self,
+        factor_id: u64,
+        records: Vec<recovery_codes::StoredRecoveryCode>,
+    ) -> Result<(), AuthError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("recovery-codes"))?;
+        store.recovery_codes_by_factor_id.insert(factor_id, records);
+        Ok(())
+    }
 }
 
 /// Permission identifiers are resource-oriented strings.
@@ -591,6 +701,8 @@ pub enum AuthError {
     FactorVerificationFailed,
     #[error("TOTP secret is not available")]
     TotpSecretMissing,
+    #[error("recovery code is invalid or already used")]
+    RecoveryCodeInvalid,
     #[error("internal auth store is unavailable: {0}")]
     StoreUnavailable(&'static str),
 }
@@ -864,6 +976,73 @@ mod tests {
         assert!(recovery
             .fallback_factors
             .contains(&FactorType::RecoveryCode));
+    }
+
+    #[test]
+    fn auth_service_generates_recovery_codes_once() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+
+        let batch = auth
+            .generate_recovery_codes(user.id)
+            .expect("recovery codes should generate");
+        let factors = auth
+            .factors_for_user(user.id)
+            .expect("factors should be listed");
+
+        assert_eq!(batch.factor.factor_type, FactorType::RecoveryCode);
+        assert_eq!(batch.codes.len(), 10);
+        assert!(factors
+            .iter()
+            .any(|factor| factor.factor_type == FactorType::RecoveryCode));
+    }
+
+    #[test]
+    fn auth_service_verifies_and_invalidates_recovery_code() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+        let batch = auth
+            .generate_recovery_codes(user.id)
+            .expect("recovery codes should generate");
+        let code = batch.codes[0].clone();
+
+        let result = auth
+            .verify_recovery_code(&user, &code)
+            .expect("first recovery code use should verify");
+        assert!(result.verified);
+        assert_eq!(result.factor_type, FactorType::RecoveryCode);
+
+        let error = auth
+            .verify_recovery_code(&user, &code)
+            .expect_err("second recovery code use should fail");
+        assert!(matches!(error, AuthError::RecoveryCodeInvalid));
+    }
+
+    #[test]
+    fn auth_service_regenerates_recovery_codes() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+        let first_batch = auth
+            .generate_recovery_codes(user.id)
+            .expect("recovery codes should generate");
+        let old_code = first_batch.codes[0].clone();
+        let second_batch = auth
+            .regenerate_recovery_codes(user.id)
+            .expect("recovery codes should regenerate");
+
+        assert_eq!(second_batch.factor.id, first_batch.factor.id);
+        assert_eq!(second_batch.codes.len(), 10);
+        assert_ne!(second_batch.codes, first_batch.codes);
+        assert!(matches!(
+            auth.verify_recovery_code(&user, &old_code),
+            Err(AuthError::RecoveryCodeInvalid)
+        ));
     }
 
     fn test_auth_service() -> AuthService {

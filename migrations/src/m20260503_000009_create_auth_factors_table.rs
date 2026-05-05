@@ -76,7 +76,7 @@ impl MigrationTrait for Migration {
 }
 
 #[derive(DeriveIden)]
-enum AuthFactors {
+pub enum AuthFactors {
     Table,
     Id,
     UserId,

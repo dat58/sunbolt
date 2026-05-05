@@ -9,6 +9,7 @@ mod m20260502_000006_create_node_credentials_table;
 mod m20260502_000007_create_node_heartbeats_table;
 mod m20260502_000008_create_enrollment_tokens_table;
 mod m20260503_000009_create_auth_factors_table;
+mod m20260505_000010_create_recovery_codes_table;
 
 pub struct Migrator;
 
@@ -25,6 +26,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260502_000007_create_node_heartbeats_table::Migration),
             Box::new(m20260502_000008_create_enrollment_tokens_table::Migration),
             Box::new(m20260503_000009_create_auth_factors_table::Migration),
+            Box::new(m20260505_000010_create_recovery_codes_table::Migration),
         ]
     }
 }
