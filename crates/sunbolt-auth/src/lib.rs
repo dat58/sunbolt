@@ -15,6 +15,7 @@ use thiserror::Error;
 
 mod mfa;
 mod passkeys;
+mod rbac;
 mod recovery_codes;
 mod totp;
 
@@ -26,6 +27,7 @@ pub use passkeys::{
     recommended_webauthn_crate, PasskeyAuthenticationChallenge, PasskeyCredential,
     PasskeyRegistrationChallenge, WebAuthnCrateChoice,
 };
+pub use rbac::{Role, RolePermission, Workspace, WorkspaceMember, WorkspaceNode};
 pub use recovery_codes::RecoveryCodeBatch;
 pub use totp::{TotpConfig, TotpEnrollment, TotpFactor, TotpRecoveryPath, TotpSecret};
 
@@ -126,7 +128,12 @@ struct AuthStore {
     passkey_credential_ids_by_user_id: HashMap<u64, Vec<u64>>,
     passkey_registration_challenges_by_id: HashMap<String, PasskeyRegistrationChallenge>,
     recovery_codes_by_factor_id: HashMap<u64, Vec<recovery_codes::StoredRecoveryCode>>,
+    role_permissions_by_role_id: HashMap<u64, Vec<RolePermission>>,
+    roles_by_id: HashMap<u64, Role>,
     totp_secrets_by_factor_id: HashMap<u64, TotpSecret>,
+    workspace_members_by_workspace_id: HashMap<u64, Vec<WorkspaceMember>>,
+    workspace_nodes_by_node_id: HashMap<String, WorkspaceNode>,
+    workspaces_by_id: HashMap<u64, Workspace>,
 }
 
 /// In-memory authentication service used for Phase 2 development flow.
@@ -136,6 +143,8 @@ pub struct AuthService {
     next_user_id: Arc<AtomicU64>,
     next_factor_id: Arc<AtomicU64>,
     next_passkey_credential_id: Arc<AtomicU64>,
+    next_role_id: Arc<AtomicU64>,
+    next_workspace_id: Arc<AtomicU64>,
     config: AuthConfig,
 }
 
@@ -154,6 +163,8 @@ impl AuthService {
             next_user_id: Arc::new(AtomicU64::new(1)),
             next_factor_id: Arc::new(AtomicU64::new(1)),
             next_passkey_credential_id: Arc::new(AtomicU64::new(1)),
+            next_role_id: Arc::new(AtomicU64::new(1)),
+            next_workspace_id: Arc::new(AtomicU64::new(1)),
             config,
         };
         if service.config.bootstrap_admin {
@@ -680,6 +691,196 @@ impl AuthService {
             .collect())
     }
 
+    /// Creates a workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is empty or RBAC state cannot be
+    /// accessed.
+    pub fn create_workspace(&self, name: &str) -> Result<Workspace, AuthError> {
+        if name.trim().is_empty() {
+            return Err(AuthError::InvalidRbacRecord);
+        }
+        let workspace =
+            rbac::workspace(self.next_workspace_id.fetch_add(1, Ordering::Relaxed), name);
+        self.store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("rbac"))?
+            .workspaces_by_id
+            .insert(workspace.id, workspace.clone());
+        Ok(workspace)
+    }
+
+    /// Creates a workspace role.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is empty or RBAC state cannot be
+    /// accessed.
+    pub fn create_role(&self, name: &str) -> Result<Role, AuthError> {
+        if name.trim().is_empty() {
+            return Err(AuthError::InvalidRbacRecord);
+        }
+        let role = rbac::role(self.next_role_id.fetch_add(1, Ordering::Relaxed), name);
+        self.store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("rbac"))?
+            .roles_by_id
+            .insert(role.id, role.clone());
+        Ok(role)
+    }
+
+    /// Grants a permission to a role.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the role does not exist, permission is empty, or
+    /// RBAC state cannot be accessed.
+    pub fn grant_role_permission(
+        &self,
+        role_id: u64,
+        permission: Permission,
+    ) -> Result<RolePermission, AuthError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("rbac"))?;
+        if !store.roles_by_id.contains_key(&role_id) {
+            return Err(AuthError::RbacRecordNotFound);
+        }
+        let role_permission = rbac::role_permission(role_id, permission.as_str());
+        store
+            .role_permissions_by_role_id
+            .entry(role_id)
+            .or_default()
+            .push(role_permission.clone());
+        Ok(role_permission)
+    }
+
+    /// Adds a user to a workspace with a role.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any referenced record is missing or RBAC state
+    /// cannot be accessed.
+    pub fn add_workspace_member(
+        &self,
+        workspace_id: u64,
+        user_id: u64,
+        role_id: u64,
+    ) -> Result<WorkspaceMember, AuthError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("rbac"))?;
+        if !store.workspaces_by_id.contains_key(&workspace_id)
+            || !store.users_by_id.contains_key(&user_id)
+            || !store.roles_by_id.contains_key(&role_id)
+        {
+            return Err(AuthError::RbacRecordNotFound);
+        }
+        let member = rbac::workspace_member(workspace_id, user_id, role_id);
+        store
+            .workspace_members_by_workspace_id
+            .entry(workspace_id)
+            .or_default()
+            .push(member.clone());
+        Ok(member)
+    }
+
+    /// Maps a node identifier to a workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the workspace is missing, node id is empty, or
+    /// RBAC state cannot be accessed.
+    pub fn map_node_to_workspace(
+        &self,
+        workspace_id: u64,
+        node_id: &str,
+    ) -> Result<WorkspaceNode, AuthError> {
+        if node_id.trim().is_empty() {
+            return Err(AuthError::InvalidRbacRecord);
+        }
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("rbac"))?;
+        if !store.workspaces_by_id.contains_key(&workspace_id) {
+            return Err(AuthError::RbacRecordNotFound);
+        }
+        let node = rbac::workspace_node(workspace_id, node_id);
+        store
+            .workspace_nodes_by_node_id
+            .insert(node.node_id.clone(), node.clone());
+        Ok(node)
+    }
+
+    /// Returns true when the user has a permission in a workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when RBAC state cannot be accessed.
+    pub fn user_has_workspace_permission(
+        &self,
+        user: &User,
+        workspace_id: u64,
+        permission: Permission,
+    ) -> Result<bool, AuthError> {
+        if user.role == UserRole::Admin {
+            return Ok(true);
+        }
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("rbac"))?;
+        let has_permission = store
+            .workspace_members_by_workspace_id
+            .get(&workspace_id)
+            .into_iter()
+            .flatten()
+            .filter(|member| member.user_id == user.id)
+            .any(|member| {
+                store
+                    .role_permissions_by_role_id
+                    .get(&member.role_id)
+                    .into_iter()
+                    .flatten()
+                    .any(|role_permission| role_permission.permission == permission.as_str())
+            });
+        Ok(has_permission)
+    }
+
+    /// Returns true when the user has a permission on the node's workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when RBAC state cannot be accessed.
+    pub fn user_has_node_permission(
+        &self,
+        user: &User,
+        node_id: &str,
+        permission: Permission,
+    ) -> Result<bool, AuthError> {
+        if user.role == UserRole::Admin {
+            return Ok(true);
+        }
+        let workspace_id = {
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| AuthError::StoreUnavailable("rbac"))?;
+            store
+                .workspace_nodes_by_node_id
+                .get(node_id)
+                .map(|node| node.workspace_id)
+        };
+        let Some(workspace_id) = workspace_id else {
+            return Ok(false);
+        };
+        self.user_has_workspace_permission(user, workspace_id, permission)
+    }
+
     /// Returns enabled MFA factors for a user.
     ///
     /// # Errors
@@ -929,6 +1130,16 @@ pub struct Permission(&'static str);
 impl Permission {
     /// Permission required to open a terminal.
     pub const TERMINAL_OPEN: Self = Self("terminal.open");
+    /// Permission required to view a node.
+    pub const NODE_VIEW: Self = Self("node.view");
+    /// Permission required to register a node.
+    pub const NODE_REGISTER: Self = Self("node.register");
+    /// Permission required to revoke a node.
+    pub const NODE_REVOKE: Self = Self("node.revoke");
+    /// Permission required to manage users.
+    pub const USER_MANAGE: Self = Self("user.manage");
+    /// Permission required to manage roles.
+    pub const ROLE_MANAGE: Self = Self("role.manage");
 
     /// Returns the stable permission identifier.
     #[must_use]
@@ -965,6 +1176,10 @@ pub enum AuthError {
     PasskeyChallengeNotFound,
     #[error("passkey credential is not available")]
     PasskeyCredentialUnavailable,
+    #[error("invalid RBAC record")]
+    InvalidRbacRecord,
+    #[error("RBAC record was not found")]
+    RbacRecordNotFound,
     #[error("internal auth store is unavailable: {0}")]
     StoreUnavailable(&'static str),
 }
@@ -1437,6 +1652,58 @@ mod tests {
             .expect_err("missing credential should reject authentication");
 
         assert!(matches!(error, AuthError::PasskeyCredentialUnavailable));
+    }
+
+    #[test]
+    fn auth_service_grants_workspace_permissions_through_roles() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("operator@example.com", "pass", UserRole::Operator)
+            .expect("operator should upsert");
+        let workspace = auth
+            .create_workspace("Operations")
+            .expect("workspace should be created");
+        let role = auth
+            .create_role("Operator")
+            .expect("role should be created");
+        auth.grant_role_permission(role.id, Permission::TERMINAL_OPEN)
+            .expect("permission should be granted");
+        auth.add_workspace_member(workspace.id, user.id, role.id)
+            .expect("member should be added");
+
+        assert!(auth
+            .user_has_workspace_permission(&user, workspace.id, Permission::TERMINAL_OPEN)
+            .expect("permission check should work"));
+        assert!(!auth
+            .user_has_workspace_permission(&user, workspace.id, Permission::NODE_REVOKE)
+            .expect("permission check should work"));
+    }
+
+    #[test]
+    fn auth_service_checks_node_permissions_through_workspace_mapping() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("operator@example.com", "pass", UserRole::Operator)
+            .expect("operator should upsert");
+        let workspace = auth
+            .create_workspace("Operations")
+            .expect("workspace should be created");
+        let role = auth
+            .create_role("Operator")
+            .expect("role should be created");
+        auth.grant_role_permission(role.id, Permission::NODE_VIEW)
+            .expect("permission should be granted");
+        auth.add_workspace_member(workspace.id, user.id, role.id)
+            .expect("member should be added");
+        auth.map_node_to_workspace(workspace.id, "node-1")
+            .expect("node should map");
+
+        assert!(auth
+            .user_has_node_permission(&user, "node-1", Permission::NODE_VIEW)
+            .expect("node permission check should work"));
+        assert!(!auth
+            .user_has_node_permission(&user, "node-2", Permission::NODE_VIEW)
+            .expect("node permission check should work"));
     }
 
     fn test_auth_service() -> AuthService {

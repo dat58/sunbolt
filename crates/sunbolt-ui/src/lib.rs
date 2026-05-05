@@ -101,6 +101,15 @@ pub fn App() -> Element {
                             onclick: move |_| page.set(ShellPage::Security),
                             "Security"
                         }
+                        button {
+                            class: if page() == ShellPage::Admin {
+                                NAV_BUTTON_ACTIVE_CLASS
+                            } else {
+                                NAV_BUTTON_CLASS
+                            },
+                            onclick: move |_| page.set(ShellPage::Admin),
+                            "Admin"
+                        }
                     }
                 }
                 match page() {
@@ -109,6 +118,7 @@ pub fn App() -> Element {
                     ShellPage::Nodes => rsx! { NodesPage {} },
                     ShellPage::AuditLogs => rsx! { AuditLogPage {} },
                     ShellPage::Security => rsx! { SecurityPage {} },
+                    ShellPage::Admin => rsx! { AdminPage {} },
                 }
             }
             link {
@@ -138,6 +148,7 @@ enum ShellPage {
     Nodes,
     AuditLogs,
     Security,
+    Admin,
 }
 
 /// First local terminal page.
@@ -387,6 +398,109 @@ pub fn SecurityPage() -> Element {
                     dd { class: "m-0 text-terminal-muted", "Challenge API ready" }
                     dt { class: "text-terminal-muted", "Authentication" }
                     dd { class: "m-0 text-terminal-muted", "Challenge API ready" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+pub fn AdminPage() -> Element {
+    rsx! {
+        section {
+            class: "grid gap-4 p-4",
+            div {
+                class: "grid grid-cols-1 gap-4 lg:grid-cols-2",
+                AdminTable {
+                    title: "Workspaces",
+                    headers: vec!["Name", "Nodes", "Members"],
+                    rows: vec![vec!["Operations", "node-1", "admin@example.com"]],
+                }
+                AdminTable {
+                    title: "Roles",
+                    headers: vec!["Role", "Permissions", "Members"],
+                    rows: vec![vec!["Operator", "terminal.open, node.view", "1"]],
+                }
+            }
+            div {
+                class: "border border-terminal-border bg-terminal-surface p-4",
+                div {
+                    class: "mb-3 flex items-center justify-between gap-3",
+                    h2 {
+                        class: "m-0 text-sm font-semibold text-terminal-text",
+                        "Workspace Access"
+                    }
+                    div {
+                        class: "flex gap-2",
+                        button { class: ACTION_BUTTON_CLASS, "Add member" }
+                        button { class: ACTION_BUTTON_CLASS, "Grant role" }
+                    }
+                }
+                div {
+                    class: "overflow-auto border border-terminal-border",
+                    table {
+                        class: "w-full border-collapse text-sm",
+                        thead {
+                            class: "bg-terminal-bg text-terminal-muted",
+                            tr {
+                                th { class: "p-2 text-left font-medium", "Workspace" }
+                                th { class: "p-2 text-left font-medium", "User" }
+                                th { class: "p-2 text-left font-medium", "Role" }
+                                th { class: "p-2 text-left font-medium", "Actions" }
+                            }
+                        }
+                        tbody {
+                            tr {
+                                td { class: "p-2 text-terminal-text", "Operations" }
+                                td { class: "p-2 text-terminal-text", "admin@example.com" }
+                                td { class: "p-2 text-terminal-text", "Admin" }
+                                td {
+                                    class: "p-2",
+                                    button { class: ACTION_BUTTON_CLASS, "Remove" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn AdminTable(
+    title: &'static str,
+    headers: Vec<&'static str>,
+    rows: Vec<Vec<&'static str>>,
+) -> Element {
+    rsx! {
+        div {
+            class: "border border-terminal-border bg-terminal-surface p-4",
+            h2 {
+                class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
+                "{title}"
+            }
+            div {
+                class: "overflow-auto border border-terminal-border",
+                table {
+                    class: "w-full border-collapse text-sm",
+                    thead {
+                        class: "bg-terminal-bg text-terminal-muted",
+                        tr {
+                            for header in headers {
+                                th { class: "p-2 text-left font-medium", "{header}" }
+                            }
+                        }
+                    }
+                    tbody {
+                        for row in rows {
+                            tr {
+                                for cell in row {
+                                    td { class: "p-2 text-terminal-text", "{cell}" }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

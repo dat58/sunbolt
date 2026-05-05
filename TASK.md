@@ -282,14 +282,14 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## RBAC
 
-- [ ] Add `workspaces` table.
-- [ ] Add `workspace_members` table.
-- [ ] Add `roles` table.
-- [ ] Add `permissions` table.
-- [ ] Add `role_permissions` table.
-- [ ] Map nodes to workspaces.
-- [ ] Add workspace-level permission checks.
-- [ ] Add user/team management UI.
+- [x] Add `workspaces` table.
+- [x] Add `workspace_members` table.
+- [x] Add `roles` table.
+- [x] Add `permissions` table.
+- [x] Add `role_permissions` table.
+- [x] Map nodes to workspaces.
+- [x] Add workspace-level permission checks.
+- [x] Add user/team management UI.
 
 ---
 
