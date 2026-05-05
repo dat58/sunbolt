@@ -38,7 +38,7 @@ use sunbolt_terminal::{
     LocalPtySession, TerminalError, TerminalExitStatus, TerminalSessionState, TerminalSize,
 };
 use tokio::{
-    sync::{mpsc, Mutex as AsyncMutex},
+    sync::{broadcast, mpsc, Mutex as AsyncMutex},
     task,
 };
 
@@ -47,6 +47,7 @@ const OUTPUT_CHANNEL_CAPACITY: usize = 32;
 const READ_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 const DEFAULT_MAX_TERMINAL_SESSIONS: usize = 16;
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const DEFAULT_DISCONNECT_GRACE: Duration = Duration::from_secs(30);
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const NODE_OFFLINE_AFTER: Duration = Duration::from_secs(90);
 
@@ -141,6 +142,7 @@ impl AppState {
 struct TerminalSessionConfig {
     max_sessions: usize,
     idle_timeout: Duration,
+    disconnect_grace: Duration,
 }
 
 impl TerminalSessionConfig {
@@ -150,6 +152,8 @@ impl TerminalSessionConfig {
                 .unwrap_or(DEFAULT_MAX_TERMINAL_SESSIONS),
             idle_timeout: env_duration_secs("SUNBOLT_TERMINAL_IDLE_TIMEOUT_SECS")
                 .unwrap_or(DEFAULT_IDLE_TIMEOUT),
+            disconnect_grace: env_duration_secs("SUNBOLT_TERMINAL_DISCONNECT_GRACE_SECS")
+                .unwrap_or(DEFAULT_DISCONNECT_GRACE),
         }
     }
 }
@@ -161,8 +165,10 @@ struct TerminalSessionRegistry {
 
 struct TrackedTerminalSession {
     session: Arc<LocalPtySession>,
+    output_tx: broadcast::Sender<TerminalServerMessage>,
     state: TerminalSessionState,
     last_activity: Instant,
+    size: ProtocolTerminalSize,
 }
 
 impl TerminalSessionRegistry {
@@ -170,24 +176,28 @@ impl TerminalSessionRegistry {
         &self,
         session_id: TerminalSessionId,
         session: Arc<LocalPtySession>,
+        size: ProtocolTerminalSize,
         max_sessions: usize,
-    ) -> bool {
+    ) -> Option<broadcast::Sender<TerminalServerMessage>> {
         let Ok(mut sessions) = self.inner.lock() else {
-            return false;
+            return None;
         };
         if sessions.len() >= max_sessions {
-            return false;
+            return None;
         }
 
+        let (output_tx, _) = broadcast::channel(OUTPUT_CHANNEL_CAPACITY);
         sessions.insert(
             session_id,
             TrackedTerminalSession {
                 session,
+                output_tx: output_tx.clone(),
                 state: TerminalSessionState::Starting,
                 last_activity: Instant::now(),
+                size,
             },
         );
-        true
+        Some(output_tx)
     }
 
     fn set_state(&self, session_id: &TerminalSessionId, state: TerminalSessionState) {
@@ -199,6 +209,37 @@ impl TerminalSessionRegistry {
                 session.state = state;
             }
         }
+    }
+
+    fn detach(&self, session_id: &TerminalSessionId) {
+        self.set_state(session_id, TerminalSessionState::Detached);
+    }
+
+    fn reattach(
+        &self,
+        session_id: &TerminalSessionId,
+    ) -> Option<(
+        Arc<LocalPtySession>,
+        broadcast::Receiver<TerminalServerMessage>,
+        ProtocolTerminalSize,
+    )> {
+        let Ok(mut sessions) = self.inner.lock() else {
+            return None;
+        };
+        let tracked = sessions.get_mut(session_id)?;
+        if !matches!(
+            tracked.state,
+            TerminalSessionState::Detached | TerminalSessionState::Reconnecting
+        ) {
+            return None;
+        }
+        tracked.state = TerminalSessionState::Reconnecting;
+        tracked.last_activity = Instant::now();
+        Some((
+            Arc::clone(&tracked.session),
+            tracked.output_tx.subscribe(),
+            tracked.size,
+        ))
     }
 
     fn touch(&self, session_id: &TerminalSessionId) {
@@ -218,6 +259,31 @@ impl TerminalSessionRegistry {
             .is_none_or(|session| session.last_activity.elapsed() >= timeout)
     }
 
+    fn set_size(&self, session_id: &TerminalSessionId, size: ProtocolTerminalSize) {
+        if let Ok(mut sessions) = self.inner.lock() {
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.size = size;
+            }
+        }
+    }
+
+    fn remove_if_detached(&self, session_id: &TerminalSessionId) -> bool {
+        let Ok(mut sessions) = self.inner.lock() else {
+            return false;
+        };
+        let should_remove = sessions
+            .get(session_id)
+            .is_some_and(|session| session.state == TerminalSessionState::Detached);
+        if !should_remove {
+            return false;
+        }
+        if let Some(session) = sessions.remove(session_id) {
+            let _ = session.session.close();
+            return true;
+        }
+        false
+    }
+
     fn remove(&self, session_id: &TerminalSessionId) {
         if let Ok(mut sessions) = self.inner.lock() {
             if let Some(session) = sessions.remove(session_id) {
@@ -231,7 +297,6 @@ impl TerminalSessionRegistry {
         self.inner.lock().map_or(0, |sessions| sessions.len())
     }
 
-    #[cfg(test)]
     fn state(&self, session_id: &TerminalSessionId) -> Option<TerminalSessionState> {
         self.inner
             .lock()
@@ -1060,8 +1125,16 @@ impl TerminalAuthorizationError {
 
 #[allow(clippy::too_many_lines)]
 async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_email: String) {
-    let Some(start) = receive_start_message(&mut socket).await else {
+    let Some(handshake) = receive_start_message(&mut socket).await else {
         return;
+    };
+
+    let start = match handshake {
+        TerminalHandshake::Start(start) => start,
+        TerminalHandshake::Reattach { session_id } => {
+            handle_local_terminal_reattach(socket, state, actor_email, session_id).await;
+            return;
+        }
     };
 
     let initial_size = terminal_size_from_protocol(start.initial_size);
@@ -1100,11 +1173,12 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
         }
     };
 
-    if !state.sessions.insert(
+    let Some(output_tx) = state.sessions.insert(
         session_id.clone(),
         Arc::clone(&session),
+        start.initial_size,
         state.terminal_config.max_sessions,
-    ) {
+    ) else {
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
             actor_email: Some(actor_email),
@@ -1123,7 +1197,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
         )
         .await;
         return;
-    }
+    };
 
     if send_server_message(
         &mut socket,
@@ -1156,7 +1230,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
         .set_state(&session_id, TerminalSessionState::Active);
 
     let (mut sender, mut receiver) = socket.split();
-    let (output_tx, mut output_rx) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
+    let mut output_rx = output_tx.subscribe();
     let output_session = Arc::clone(&session);
     let output_session_id = session_id.clone();
 
@@ -1169,9 +1243,15 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
 
     loop {
         tokio::select! {
-            Some(output) = output_rx.recv() => {
+            output = output_rx.recv() => {
+                let output = match output {
+                    Ok(output) => output,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
                 state.sessions.touch(&session_id);
-                if matches!(output, TerminalServerMessage::Exited { .. }) {
+                let is_terminal_exit = matches!(output, TerminalServerMessage::Exited { .. });
+                if is_terminal_exit {
                     state.sessions.set_state(&session_id, TerminalSessionState::Closed);
                 }
                 if let TerminalServerMessage::Error { error, .. } = &output {
@@ -1183,18 +1263,29 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
                     });
                 }
                 if send_split_server_message(&mut sender, output).await.is_err() {
+                    state.sessions.detach(&session_id);
+                    schedule_detached_terminal_cleanup(
+                        state.sessions.clone(),
+                        session_id.clone(),
+                        state.terminal_config.disconnect_grace,
+                    );
+                    break;
+                }
+                if is_terminal_exit {
                     break;
                 }
             }
             incoming = receiver.next() => {
-                match incoming {
-                    Some(Ok(message)) => {
-                        state.sessions.touch(&session_id);
-                        if !handle_client_frame(&state.sessions, &session, &session_id, message, &mut sender).await {
-                            break;
-                        }
+                if let Some(Ok(message)) = incoming {
+                    state.sessions.touch(&session_id);
+                    if !handle_client_frame(&state.sessions, &session, &session_id, message, &mut sender).await {
+                        schedule_cleanup_if_detached(&state, &session_id);
+                        break;
                     }
-                    Some(Err(_)) | None => break,
+                } else {
+                    state.sessions.detach(&session_id);
+                    schedule_cleanup_if_detached(&state, &session_id);
+                    break;
                 }
             }
             _ = idle_check.tick() => {
@@ -1217,6 +1308,13 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
         }
     }
 
+    if matches!(
+        state.sessions.state(&session_id),
+        Some(TerminalSessionState::Detached)
+    ) {
+        let _ = tokio::time::timeout(READ_SHUTDOWN_GRACE, output_reader).await;
+        return;
+    }
     state
         .sessions
         .set_state(&session_id, TerminalSessionState::Closing);
@@ -1232,21 +1330,185 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
     }
 }
 
+#[allow(clippy::too_many_lines)]
+async fn handle_local_terminal_reattach(
+    socket: WebSocket,
+    state: AppState,
+    actor_email: String,
+    session_id: TerminalSessionId,
+) {
+    let Some((session, mut output_rx, size)) = state.sessions.reattach(&session_id) else {
+        let mut socket = socket;
+        let _ = send_server_message(
+            &mut socket,
+            TerminalServerMessage::Error {
+                session_id: Some(session_id),
+                error: protocol_error_text(
+                    TerminalErrorCode::SessionNotFound,
+                    "detached terminal session was not found",
+                ),
+            },
+        )
+        .await;
+        return;
+    };
+
+    let (mut sender, mut receiver) = socket.split();
+    state
+        .sessions
+        .set_state(&session_id, TerminalSessionState::Reattached);
+    let _ = send_split_server_message(
+        &mut sender,
+        TerminalServerMessage::Reattached {
+            session_id: session_id.clone(),
+            node_id: None,
+            size,
+        },
+    )
+    .await;
+    state
+        .sessions
+        .set_state(&session_id, TerminalSessionState::Active);
+
+    let mut idle_check = tokio::time::interval(IDLE_CHECK_INTERVAL);
+    let mut terminal_failed = false;
+
+    loop {
+        tokio::select! {
+            output = output_rx.recv() => {
+                let output = match output {
+                    Ok(output) => output,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                state.sessions.touch(&session_id);
+                let is_terminal_exit = matches!(output, TerminalServerMessage::Exited { .. });
+                if is_terminal_exit {
+                    state.sessions.set_state(&session_id, TerminalSessionState::Closed);
+                }
+                if let TerminalServerMessage::Error { error, .. } = &output {
+                    terminal_failed = true;
+                    state.audit.record(AuditEventInput {
+                        kind: AuditEventKind::TerminalFailed,
+                        actor_email: Some(actor_email.clone()),
+                        message: format!("terminal stream error: {}", error.message),
+                    });
+                }
+                if send_split_server_message(&mut sender, output).await.is_err() {
+                    state.sessions.detach(&session_id);
+                    schedule_detached_terminal_cleanup(
+                        state.sessions.clone(),
+                        session_id.clone(),
+                        state.terminal_config.disconnect_grace,
+                    );
+                    break;
+                }
+                if is_terminal_exit {
+                    break;
+                }
+            }
+            incoming = receiver.next() => {
+                if let Some(Ok(message)) = incoming {
+                    state.sessions.touch(&session_id);
+                    if !handle_client_frame(&state.sessions, &session, &session_id, message, &mut sender).await {
+                        schedule_cleanup_if_detached(&state, &session_id);
+                        break;
+                    }
+                } else {
+                    state.sessions.detach(&session_id);
+                    schedule_cleanup_if_detached(&state, &session_id);
+                    break;
+                }
+            }
+            _ = idle_check.tick() => {
+                if state.sessions.is_idle(&session_id, state.terminal_config.idle_timeout) {
+                    state.sessions.set_state(&session_id, TerminalSessionState::Closing);
+                    let _ = send_split_server_message(
+                        &mut sender,
+                        TerminalServerMessage::Error {
+                            session_id: Some(session_id.clone()),
+                            error: protocol_error_text(
+                                TerminalErrorCode::TerminalUnavailable,
+                                "terminal session idle timeout reached",
+                            ),
+                        },
+                    )
+                    .await;
+                    break;
+                }
+            }
+        }
+    }
+
+    if matches!(
+        state.sessions.state(&session_id),
+        Some(TerminalSessionState::Detached)
+    ) {
+        return;
+    }
+
+    state
+        .sessions
+        .set_state(&session_id, TerminalSessionState::Closing);
+    state.sessions.remove(&session_id);
+
+    if !terminal_failed {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalClosed,
+            actor_email: Some(actor_email),
+            message: format!("terminal session {} closed", session_id.0),
+        });
+    }
+}
+
+fn schedule_detached_terminal_cleanup(
+    registry: TerminalSessionRegistry,
+    session_id: TerminalSessionId,
+    grace: Duration,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(grace).await;
+        let _ = registry.remove_if_detached(&session_id);
+    });
+}
+
+fn schedule_cleanup_if_detached(state: &AppState, session_id: &TerminalSessionId) {
+    if !matches!(
+        state.sessions.state(session_id),
+        Some(TerminalSessionState::Detached)
+    ) {
+        return;
+    }
+    schedule_detached_terminal_cleanup(
+        state.sessions.clone(),
+        session_id.clone(),
+        state.terminal_config.disconnect_grace,
+    );
+}
+
 struct StartTerminal {
     node_id: Option<sunbolt_protocol::NodeId>,
     initial_size: ProtocolTerminalSize,
 }
 
-async fn receive_start_message(socket: &mut WebSocket) -> Option<StartTerminal> {
+enum TerminalHandshake {
+    Start(StartTerminal),
+    Reattach { session_id: TerminalSessionId },
+}
+
+async fn receive_start_message(socket: &mut WebSocket) -> Option<TerminalHandshake> {
     match socket.recv().await {
         Some(Ok(message)) => match parse_client_message(message) {
             Ok(TerminalClientMessage::Start {
                 node_id,
                 initial_size,
-            }) => Some(StartTerminal {
+            }) => Some(TerminalHandshake::Start(StartTerminal {
                 node_id,
                 initial_size,
-            }),
+            })),
+            Ok(TerminalClientMessage::Reattach { session_id }) => {
+                Some(TerminalHandshake::Reattach { session_id })
+            }
             Ok(_) => {
                 let _ = send_server_message(
                     socket,
@@ -1254,7 +1516,7 @@ async fn receive_start_message(socket: &mut WebSocket) -> Option<StartTerminal> 
                         session_id: None,
                         error: protocol_error_text(
                             TerminalErrorCode::InvalidMessage,
-                            "first terminal message must be start",
+                            "first terminal message must be start or reattach",
                         ),
                     },
                 )
@@ -1603,6 +1865,7 @@ async fn handle_client_frame(
             if !session_id_matches(&session_id, active_session_id, sender).await {
                 return true;
             }
+            registry.set_size(active_session_id, size);
             if let Err(error) = session.resize(terminal_size_from_protocol(size)) {
                 let _ = send_split_server_message(
                     sender,
@@ -1728,7 +1991,7 @@ async fn session_id_matches(
 fn read_pty_output(
     session: Arc<LocalPtySession>,
     session_id: TerminalSessionId,
-    output_tx: mpsc::Sender<TerminalServerMessage>,
+    output_tx: broadcast::Sender<TerminalServerMessage>,
 ) {
     let mut buffer = [0_u8; OUTPUT_BUFFER_SIZE];
 
@@ -1747,21 +2010,16 @@ fn read_pty_output(
                 // this blocking send slows PTY reads when the WebSocket writer
                 // cannot keep up, instead of buffering terminal output without
                 // limit.
-                if output_tx
-                    .blocking_send(TerminalServerMessage::Output {
-                        session_id: session_id.clone(),
-                        data,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
+                let _ = output_tx.send(TerminalServerMessage::Output {
+                    session_id: session_id.clone(),
+                    data,
+                });
             }
             Err(error) => {
                 if let Ok(Some(exit)) = session.try_wait_exit() {
-                    let _ = output_tx.blocking_send(exit_message(session_id.clone(), exit));
+                    let _ = output_tx.send(exit_message(session_id.clone(), exit));
                 } else {
-                    let _ = output_tx.blocking_send(TerminalServerMessage::Error {
+                    let _ = output_tx.send(TerminalServerMessage::Error {
                         session_id: Some(session_id.clone()),
                         error: protocol_error(TerminalErrorCode::TerminalUnavailable, error),
                     });
@@ -1772,7 +2030,7 @@ fn read_pty_output(
     }
 
     if let Ok(Some(exit)) = session.wait_exit() {
-        let _ = output_tx.blocking_send(exit_message(session_id, exit));
+        let _ = output_tx.send(exit_message(session_id, exit));
     }
 }
 
@@ -1980,7 +2238,14 @@ mod tests {
                 .expect("test shell should spawn"),
         );
 
-        assert!(registry.insert(session_id.clone(), Arc::clone(&session), 1));
+        assert!(registry
+            .insert(
+                session_id.clone(),
+                Arc::clone(&session),
+                TerminalSize { cols: 80, rows: 24 },
+                1
+            )
+            .is_some());
         assert_eq!(registry.len(), 1);
         assert_eq!(
             registry.state(&session_id),
@@ -2002,12 +2267,22 @@ mod tests {
             registry.state(&session_id),
             Some(TerminalSessionState::Detached)
         );
+        assert!(registry.reattach(&session_id).is_some());
+        registry.set_state(&session_id, TerminalSessionState::Reattached);
+        registry.set_state(&session_id, TerminalSessionState::Active);
+        assert_eq!(
+            registry.state(&session_id),
+            Some(TerminalSessionState::Active)
+        );
 
-        assert!(!registry.insert(
-            TerminalSessionId("session-2".to_owned()),
-            Arc::clone(&session),
-            1
-        ));
+        assert!(registry
+            .insert(
+                TerminalSessionId("session-2".to_owned()),
+                Arc::clone(&session),
+                TerminalSize { cols: 80, rows: 24 },
+                1
+            )
+            .is_none());
 
         registry.remove(&session_id);
         assert_eq!(registry.len(), 0);
