@@ -275,10 +275,10 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Step-up MFA
 
-- [ ] Add policy requiring step-up MFA for terminal open.
-- [ ] Add recent-MFA timestamp to session.
-- [ ] Prompt MFA before opening terminal when required.
-- [ ] Add audit event for MFA challenge and success.
+- [x] Add policy requiring step-up MFA for terminal open.
+- [x] Add recent-MFA timestamp to session.
+- [x] Prompt MFA before opening terminal when required.
+- [x] Add audit event for MFA challenge and success.
 
 ## RBAC
 

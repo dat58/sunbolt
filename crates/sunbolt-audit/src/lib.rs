@@ -14,6 +14,8 @@ pub enum AuditEventKind {
     UserLoginSuccess,
     UserLoginFailed,
     UserLogout,
+    UserMfaChallenge,
+    UserMfaSuccess,
     TerminalOpened,
     TerminalClosed,
     TerminalFailed,
@@ -29,6 +31,8 @@ impl AuditEventKind {
             Self::UserLoginSuccess => "user.login.success",
             Self::UserLoginFailed => "user.login.failed",
             Self::UserLogout => "user.logout",
+            Self::UserMfaChallenge => "user.mfa.challenge",
+            Self::UserMfaSuccess => "user.mfa.success",
             Self::TerminalOpened => "terminal.opened",
             Self::TerminalClosed => "terminal.closed",
             Self::TerminalFailed => "terminal.failed",
@@ -44,6 +48,8 @@ impl AuditEventKind {
             Self::UserLoginSuccess
                 | Self::UserLoginFailed
                 | Self::UserLogout
+                | Self::UserMfaChallenge
+                | Self::UserMfaSuccess
                 | Self::TerminalOpened
                 | Self::TerminalClosed
                 | Self::TerminalFailed
@@ -141,6 +147,11 @@ mod tests {
             "user.login.failed"
         );
         assert_eq!(AuditEventKind::UserLogout.as_str(), "user.logout");
+        assert_eq!(
+            AuditEventKind::UserMfaChallenge.as_str(),
+            "user.mfa.challenge"
+        );
+        assert_eq!(AuditEventKind::UserMfaSuccess.as_str(), "user.mfa.success");
         assert_eq!(AuditEventKind::TerminalOpened.as_str(), "terminal.opened");
         assert_eq!(AuditEventKind::TerminalClosed.as_str(), "terminal.closed");
         assert_eq!(AuditEventKind::TerminalFailed.as_str(), "terminal.failed");

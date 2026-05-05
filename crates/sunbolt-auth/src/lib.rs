@@ -30,6 +30,7 @@ pub use recovery_codes::RecoveryCodeBatch;
 pub use totp::{TotpConfig, TotpEnrollment, TotpFactor, TotpRecoveryPath, TotpSecret};
 
 const DEFAULT_SESSION_TTL_SECS: u64 = 8 * 60 * 60;
+const DEFAULT_RECENT_MFA_TTL_SECS: u64 = 10 * 60;
 const DEFAULT_ADMIN_EMAIL: &str = "admin@sunbolt.local";
 const DEFAULT_ADMIN_PASSWORD: &str = "sunbolt-dev-admin";
 
@@ -40,7 +41,9 @@ pub const SESSION_COOKIE_NAME: &str = "sunbolt_session";
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AuthConfig {
     pub session_ttl: Duration,
+    pub recent_mfa_ttl: Duration,
     pub secure_cookie: bool,
+    pub require_step_up_mfa_for_terminal: bool,
     pub bootstrap_admin: bool,
     pub admin_email: String,
     pub admin_password: String,
@@ -53,7 +56,12 @@ impl AuthConfig {
         let session_ttl = Duration::from_secs(
             env_u64("SUNBOLT_SESSION_TTL_SECS").unwrap_or(DEFAULT_SESSION_TTL_SECS),
         );
+        let recent_mfa_ttl = Duration::from_secs(
+            env_u64("SUNBOLT_RECENT_MFA_TTL_SECS").unwrap_or(DEFAULT_RECENT_MFA_TTL_SECS),
+        );
         let secure_cookie = env_bool("SUNBOLT_COOKIE_SECURE").unwrap_or(false);
+        let require_step_up_mfa_for_terminal =
+            env_bool("SUNBOLT_REQUIRE_TERMINAL_STEP_UP_MFA").unwrap_or(true);
         let bootstrap_admin = env_bool("SUNBOLT_DEV_BOOTSTRAP_ADMIN").unwrap_or(true);
         let admin_email = env::var("SUNBOLT_DEV_ADMIN_EMAIL")
             .ok()
@@ -66,7 +74,9 @@ impl AuthConfig {
 
         Self {
             session_ttl,
+            recent_mfa_ttl,
             secure_cookie,
+            require_step_up_mfa_for_terminal,
             bootstrap_admin,
             admin_email,
             admin_password,
@@ -101,6 +111,7 @@ struct StoredUser {
 struct SessionRecord {
     user_id: u64,
     expires_at: Instant,
+    recent_mfa_at: Option<Instant>,
 }
 
 #[derive(Debug, Default)]
@@ -248,6 +259,7 @@ impl AuthService {
             SessionRecord {
                 user_id: user.id,
                 expires_at: now + self.config.session_ttl,
+                recent_mfa_at: None,
             },
         );
         Ok((user, token))
@@ -292,6 +304,69 @@ impl AuthService {
     #[must_use]
     pub fn can_open_terminal(&self, user: &User) -> bool {
         matches!(user.role, UserRole::Admin | UserRole::Operator)
+    }
+
+    /// Returns true when terminal access requires recent step-up MFA.
+    #[must_use]
+    pub const fn terminal_step_up_policy_enabled(&self) -> bool {
+        self.config.require_step_up_mfa_for_terminal
+    }
+
+    /// Returns true when a session has a recent MFA verification timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when session state cannot be accessed.
+    pub fn has_recent_mfa(&self, token: &str) -> Result<bool, AuthError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("sessions"))?;
+        Self::purge_expired_sessions_locked(&mut store);
+        let Some(session) = store.sessions_by_token.get(token) else {
+            return Ok(false);
+        };
+        Ok(session
+            .recent_mfa_at
+            .is_some_and(|verified_at| verified_at.elapsed() <= self.config.recent_mfa_ttl))
+    }
+
+    /// Records a successful MFA verification on a session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session is missing or state cannot be
+    /// accessed.
+    pub fn record_mfa_success(&self, token: &str) -> Result<(), AuthError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("sessions"))?;
+        Self::purge_expired_sessions_locked(&mut store);
+        let Some(session) = store.sessions_by_token.get_mut(token) else {
+            return Err(AuthError::InvalidSession);
+        };
+        session.recent_mfa_at = Some(Instant::now());
+        Ok(())
+    }
+
+    /// Returns true when the user can open a terminal with this session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when session state cannot be accessed.
+    pub fn can_open_terminal_with_session(
+        &self,
+        user: &User,
+        token: &str,
+    ) -> Result<bool, AuthError> {
+        if !self.can_open_terminal(user) {
+            return Ok(false);
+        }
+        if !self.config.require_step_up_mfa_for_terminal {
+            return Ok(true);
+        }
+        self.has_recent_mfa(token)
     }
 
     /// Enrolls MFA factor metadata for a user.
@@ -866,6 +941,8 @@ impl Permission {
 pub enum AuthError {
     #[error("invalid credentials")]
     InvalidCredentials,
+    #[error("invalid auth session")]
+    InvalidSession,
     #[error("user was not found")]
     UserNotFound,
     #[error("invalid MFA factor label")]
@@ -941,7 +1018,7 @@ mod tests {
     use super::{
         AuthConfig, AuthContext, AuthError, AuthFactor, AuthService, FactorChallenge,
         FactorResponse, FactorResult, FactorType, MfaPurpose, Permission, TotpSecret, UserRole,
-        DEFAULT_SESSION_TTL_SECS,
+        DEFAULT_RECENT_MFA_TTL_SECS, DEFAULT_SESSION_TTL_SECS,
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -949,7 +1026,9 @@ mod tests {
     fn bootstrap_admin_can_login() {
         let config = AuthConfig {
             session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            recent_mfa_ttl: Duration::from_secs(DEFAULT_RECENT_MFA_TTL_SECS),
             secure_cookie: false,
+            require_step_up_mfa_for_terminal: true,
             bootstrap_admin: true,
             admin_email: "admin@example.com".to_owned(),
             admin_password: "password123".to_owned(),
@@ -973,7 +1052,9 @@ mod tests {
     fn logout_invalidates_session() {
         let config = AuthConfig {
             session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            recent_mfa_ttl: Duration::from_secs(DEFAULT_RECENT_MFA_TTL_SECS),
             secure_cookie: false,
+            require_step_up_mfa_for_terminal: true,
             bootstrap_admin: true,
             admin_email: "admin@example.com".to_owned(),
             admin_password: "password123".to_owned(),
@@ -994,7 +1075,9 @@ mod tests {
     fn role_checks_gate_terminal_access() {
         let config = AuthConfig {
             session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            recent_mfa_ttl: Duration::from_secs(DEFAULT_RECENT_MFA_TTL_SECS),
             secure_cookie: false,
+            require_step_up_mfa_for_terminal: true,
             bootstrap_admin: false,
             admin_email: "ignore@example.com".to_owned(),
             admin_password: "ignore".to_owned(),
@@ -1100,6 +1183,28 @@ mod tests {
             .expect_err("unenrolled factor should be rejected");
 
         assert!(matches!(error, AuthError::FactorNotEnrolled));
+    }
+
+    #[test]
+    fn auth_service_requires_recent_mfa_for_terminal_policy() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+        let (_, token) = auth
+            .login("admin@example.com", "pass")
+            .expect("login should work");
+
+        assert!(auth.terminal_step_up_policy_enabled());
+        assert!(!auth
+            .can_open_terminal_with_session(&user, &token)
+            .expect("terminal check should read session"));
+
+        auth.record_mfa_success(&token)
+            .expect("MFA success should record");
+        assert!(auth
+            .can_open_terminal_with_session(&user, &token)
+            .expect("terminal check should read session"));
     }
 
     #[test]
@@ -1337,7 +1442,9 @@ mod tests {
     fn test_auth_service() -> AuthService {
         AuthService::new(AuthConfig {
             session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            recent_mfa_ttl: Duration::from_secs(DEFAULT_RECENT_MFA_TTL_SECS),
             secure_cookie: false,
+            require_step_up_mfa_for_terminal: true,
             bootstrap_admin: false,
             admin_email: "ignore@example.com".to_owned(),
             admin_password: "ignore".to_owned(),

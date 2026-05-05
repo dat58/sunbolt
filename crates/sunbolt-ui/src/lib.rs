@@ -7,6 +7,7 @@ pub const TERMINAL_NODE_INPUT_ID: &str = "sunbolt-terminal-node";
 
 /// WebSocket endpoint used by the terminal UI.
 pub const TERMINAL_WS_ENDPOINT: &str = "/terminal/ws";
+pub const STEP_UP_MFA_ENDPOINT: &str = "/auth/mfa/step-up";
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
 const STATUS_BASE_CLASS: &str = "inline-flex h-6 items-center rounded-full border px-2.5 text-xs";
@@ -159,6 +160,11 @@ pub fn TerminalPageBody() -> Element {
                         id: "sunbolt-terminal-status",
                         class: STATUS_CONNECTING_CLASS,
                         "Connecting"
+                    }
+                    button {
+                        id: "sunbolt-terminal-mfa",
+                        class: ACTION_BUTTON_CLASS,
+                        "Step-up MFA"
                     }
                     button {
                         id: "sunbolt-terminal-reconnect",
@@ -397,6 +403,7 @@ pub fn terminal_bridge_script() -> String {
   const mount = document.getElementById("{mount_id}");
   const status = document.getElementById("sunbolt-terminal-status");
   const closeButton = document.getElementById("sunbolt-terminal-close");
+  const mfaButton = document.getElementById("sunbolt-terminal-mfa");
   const reconnectButton = document.getElementById("sunbolt-terminal-reconnect");
   const nodeInput = document.getElementById("{node_input_id}");
   if (!mount || mount.dataset.sunboltTerminalReady === "true") {{
@@ -517,6 +524,21 @@ pub fn terminal_bridge_script() -> String {
     setStatus("Closed", "closed");
   }};
 
+  const completeStepUpMfa = async () => {{
+    setStatus("MFA", "connecting");
+    const response = await fetch("{step_up_mfa_endpoint}", {{
+      method: "POST",
+      headers: {{ "content-type": "application/json" }},
+      body: JSON.stringify({{ factor_type: "totp" }})
+    }});
+    if (!response.ok) {{
+      setStatus("MFA Required", "error");
+      return;
+    }}
+    setStatus("Connecting", "connecting");
+    connect();
+  }};
+
   if (window.Terminal) {{
     terminal = new window.Terminal({{
       cursorBlink: true,
@@ -551,6 +573,9 @@ pub fn terminal_bridge_script() -> String {
   if (closeButton) {{
     closeButton.addEventListener("click", closeTerminal);
   }}
+  if (mfaButton) {{
+    mfaButton.addEventListener("click", completeStepUpMfa);
+  }}
   window.addEventListener("beforeunload", () => {{
     if (sessionId) {{
       send({{ type: "close", session_id: sessionId }});
@@ -562,6 +587,7 @@ pub fn terminal_bridge_script() -> String {
         mount_id = TERMINAL_MOUNT_ID,
         node_input_id = TERMINAL_NODE_INPUT_ID,
         endpoint = TERMINAL_WS_ENDPOINT,
+        step_up_mfa_endpoint = STEP_UP_MFA_ENDPOINT,
         cols = DEFAULT_TERMINAL_SIZE.cols,
         rows = DEFAULT_TERMINAL_SIZE.rows,
         status_base_class = STATUS_BASE_CLASS,
@@ -577,8 +603,8 @@ pub fn terminal_bridge_script() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_title, terminal_bridge_script, TERMINAL_MOUNT_ID, TERMINAL_NODE_INPUT_ID,
-        TERMINAL_WS_ENDPOINT,
+        app_title, terminal_bridge_script, STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID,
+        TERMINAL_NODE_INPUT_ID, TERMINAL_WS_ENDPOINT,
     };
 
     #[test]
@@ -591,6 +617,7 @@ mod tests {
         let script = terminal_bridge_script();
 
         assert!(script.contains(TERMINAL_WS_ENDPOINT));
+        assert!(script.contains(STEP_UP_MFA_ENDPOINT));
         assert!(script.contains(TERMINAL_MOUNT_ID));
         assert!(script.contains(TERMINAL_NODE_INPUT_ID));
         assert!(script.contains(r#"type: "start""#));
@@ -598,6 +625,7 @@ mod tests {
         assert!(script.contains(r#"type: "resize""#));
         assert!(script.contains(r#"type: "close""#));
         assert!(script.contains("sunbolt-terminal-close"));
+        assert!(script.contains("sunbolt-terminal-mfa"));
         assert!(script.contains("sunbolt-terminal-reconnect"));
         assert!(script.contains("border-lightning-cyan"));
     }

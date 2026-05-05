@@ -28,7 +28,7 @@ use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sunbolt_audit::{AuditEvent, AuditEventInput, AuditEventKind, AuditLog};
-use sunbolt_auth::{AuthError, AuthService, User, SESSION_COOKIE_NAME};
+use sunbolt_auth::{AuthError, AuthService, FactorType, User, SESSION_COOKIE_NAME};
 use sunbolt_protocol::{
     AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalClientMessage,
     TerminalError as ProtocolTerminalError, TerminalErrorCode, TerminalExit, TerminalServerMessage,
@@ -57,6 +57,7 @@ pub const TERMINAL_WS_PATH: &str = "/terminal/ws";
 pub const AUTH_LOGIN_PATH: &str = "/auth/login";
 pub const AUTH_LOGOUT_PATH: &str = "/auth/logout";
 pub const AUTH_ME_PATH: &str = "/auth/me";
+pub const AUTH_MFA_STEP_UP_PATH: &str = "/auth/mfa/step-up";
 pub const ACCESS_HISTORY_PATH: &str = "/access/history";
 pub const AUDIT_LOGS_PATH: &str = "/audit/logs";
 pub const ENROLLMENT_TOKENS_PATH: &str = "/nodes/enrollment-tokens";
@@ -81,6 +82,10 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route(TERMINAL_WS_PATH, get(terminal_websocket))
         .route(AUTH_LOGIN_PATH, post(auth_login))
+        .route(
+            AUTH_MFA_STEP_UP_PATH,
+            post(auth_mfa_step_up).layer(auth_layer.clone()),
+        )
         .route(
             AUTH_LOGOUT_PATH,
             post(auth_logout).layer(auth_layer.clone()),
@@ -579,6 +584,17 @@ struct CurrentUserResponse {
     user: User,
 }
 
+#[derive(Debug, Deserialize)]
+struct StepUpMfaRequest {
+    factor_type: FactorType,
+}
+
+#[derive(Debug, Serialize)]
+struct StepUpMfaResponse {
+    accepted: bool,
+    factor_type: FactorType,
+}
+
 #[derive(Debug, Serialize)]
 struct AuditEntriesResponse {
     events: Vec<AuditEvent>,
@@ -727,6 +743,60 @@ async fn auth_logout(
 
 async fn auth_me(Extension(user): Extension<AuthenticatedUser>) -> impl IntoResponse {
     Json(CurrentUserResponse { user: user.0 })
+}
+
+async fn auth_mfa_step_up(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    headers: HeaderMap,
+    Json(request): Json<StepUpMfaRequest>,
+) -> impl IntoResponse {
+    state.audit.record(AuditEventInput {
+        kind: AuditEventKind::UserMfaChallenge,
+        actor_email: Some(user.0.email.clone()),
+        message: format!(
+            "step-up MFA challenge requested using {:?}",
+            request.factor_type
+        ),
+    });
+
+    let Some(token) = session_token_from_headers(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "missing auth session",
+            }),
+        )
+            .into_response();
+    };
+    match state.auth.record_mfa_success(token) {
+        Ok(()) => {
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::UserMfaSuccess,
+                actor_email: Some(user.0.email),
+                message: format!("step-up MFA completed using {:?}", request.factor_type),
+            });
+            Json(StepUpMfaResponse {
+                accepted: true,
+                factor_type: request.factor_type,
+            })
+            .into_response()
+        }
+        Err(AuthError::InvalidSession) => (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "invalid auth session",
+            }),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "auth service unavailable",
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn access_history(State(state): State<AppState>) -> impl IntoResponse {
@@ -906,16 +976,21 @@ async fn terminal_websocket(
 ) -> impl IntoResponse {
     let user = match authorize_terminal_request(&state.auth, &headers) {
         Ok(user) => user,
-        Err(status) => {
+        Err(error) => {
+            let status = error.status_code();
             state.audit.record(AuditEventInput {
-                kind: AuditEventKind::TerminalFailed,
+                kind: if error == TerminalAuthorizationError::StepUpMfaRequired {
+                    AuditEventKind::UserMfaChallenge
+                } else {
+                    AuditEventKind::TerminalFailed
+                },
                 actor_email: None,
-                message: "terminal websocket authorization failed".to_owned(),
+                message: error.message().to_owned(),
             });
             return (
                 status,
                 Json(ErrorResponse {
-                    error: "terminal websocket authorization failed",
+                    error: error.message(),
                 }),
             )
                 .into_response();
@@ -926,19 +1001,58 @@ async fn terminal_websocket(
         .into_response()
 }
 
-fn authorize_terminal_request(auth: &AuthService, headers: &HeaderMap) -> Result<User, StatusCode> {
-    let token = session_token_from_headers(headers).ok_or(StatusCode::UNAUTHORIZED)?;
+fn authorize_terminal_request(
+    auth: &AuthService,
+    headers: &HeaderMap,
+) -> Result<User, TerminalAuthorizationError> {
+    let token =
+        session_token_from_headers(headers).ok_or(TerminalAuthorizationError::Unauthorized)?;
     let user = match auth.current_user(token) {
         Ok(Some(user)) => user,
-        Ok(None) => return Err(StatusCode::UNAUTHORIZED),
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(None) => return Err(TerminalAuthorizationError::Unauthorized),
+        Err(_) => return Err(TerminalAuthorizationError::Internal),
     };
 
     if !auth.can_open_terminal(&user) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(TerminalAuthorizationError::Forbidden);
+    }
+    match auth.can_open_terminal_with_session(&user, token) {
+        Ok(true) => {}
+        Ok(false) if auth.terminal_step_up_policy_enabled() => {
+            return Err(TerminalAuthorizationError::StepUpMfaRequired);
+        }
+        Ok(false) => return Err(TerminalAuthorizationError::Forbidden),
+        Err(_) => return Err(TerminalAuthorizationError::Internal),
     }
 
     Ok(user)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum TerminalAuthorizationError {
+    Unauthorized,
+    Forbidden,
+    StepUpMfaRequired,
+    Internal,
+}
+
+impl TerminalAuthorizationError {
+    const fn status_code(self) -> StatusCode {
+        match self {
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden | Self::StepUpMfaRequired => StatusCode::FORBIDDEN,
+            Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    const fn message(self) -> &'static str {
+        match self {
+            Self::Unauthorized => "terminal websocket authorization failed",
+            Self::Forbidden => "terminal access is forbidden",
+            Self::StepUpMfaRequired => "step-up MFA is required before opening a terminal",
+            Self::Internal => "terminal authorization service unavailable",
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1732,10 +1846,10 @@ mod tests {
     use super::{
         authorize_terminal_request, build_router, component_name, exit_message,
         parse_client_message, terminal_size_from_protocol, AgentConnectionRegistry, AppState,
-        NodeEnrollmentRegistry, TerminalSessionConfig, TerminalSessionRegistry,
-        ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
-        AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, ENROLLMENT_TOKENS_PATH, NODES_PATH,
-        SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
+        NodeEnrollmentRegistry, TerminalAuthorizationError, TerminalSessionConfig,
+        TerminalSessionRegistry, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH,
+        AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
+        ENROLLMENT_TOKENS_PATH, NODES_PATH, SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
@@ -2030,6 +2144,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn step_up_mfa_endpoint_records_recent_mfa_and_audit_events() {
+        let router = test_router();
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AUTH_MFA_STEP_UP_PATH)
+                    .header(header::COOKIE, cookie.as_str())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "factor_type": "totp"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let logs_response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(AUDIT_LOGS_PATH)
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        let body = axum::body::to_bytes(logs_response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        let events = payload["events"]
+            .as_array()
+            .expect("events should be a list");
+        assert!(events
+            .iter()
+            .any(|event| event["kind"] == json!("UserMfaChallenge")));
+        assert!(events
+            .iter()
+            .any(|event| event["kind"] == json!("UserMfaSuccess")));
+    }
+
+    #[tokio::test]
     async fn enrollment_token_requires_authentication() {
         let response = test_router()
             .oneshot(
@@ -2305,9 +2470,9 @@ mod tests {
                 .expect("cookie header should parse"),
         );
 
-        let status =
+        let error =
             authorize_terminal_request(&auth, &headers).expect_err("viewer should be forbidden");
-        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(error, TerminalAuthorizationError::Forbidden);
     }
 
     #[test]
@@ -2315,9 +2480,34 @@ mod tests {
         let headers = HeaderMap::new();
         let auth = test_auth_service();
 
-        let status = authorize_terminal_request(&auth, &headers)
+        let error = authorize_terminal_request(&auth, &headers)
             .expect_err("missing auth should be rejected");
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(error, TerminalAuthorizationError::Unauthorized);
+    }
+
+    #[test]
+    fn terminal_authorization_requires_recent_step_up_mfa() {
+        let auth = test_auth_service();
+        let (_, token) = auth
+            .login("admin@example.com", "admin-password")
+            .expect("admin should log in");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            format!("{SESSION_COOKIE_NAME}={token}")
+                .parse()
+                .expect("cookie header should parse"),
+        );
+
+        let error = authorize_terminal_request(&auth, &headers)
+            .expect_err("missing step-up MFA should be rejected");
+        assert_eq!(error, TerminalAuthorizationError::StepUpMfaRequired);
+
+        auth.record_mfa_success(&token)
+            .expect("MFA success should record");
+        let user = authorize_terminal_request(&auth, &headers)
+            .expect("recent step-up MFA should allow terminal");
+        assert_eq!(user.email, "admin@example.com");
     }
 
     fn test_shell() -> Option<String> {
@@ -2351,7 +2541,9 @@ mod tests {
     fn test_auth_service() -> AuthService {
         let auth = AuthService::new(AuthConfig {
             session_ttl: Duration::from_secs(60 * 60),
+            recent_mfa_ttl: Duration::from_secs(10 * 60),
             secure_cookie: false,
+            require_step_up_mfa_for_terminal: true,
             bootstrap_admin: false,
             admin_email: "unused@example.com".to_owned(),
             admin_password: "unused".to_owned(),
