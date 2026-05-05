@@ -316,14 +316,14 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Security Hardening
 
-- [ ] Add WebSocket origin validation.
-- [ ] Add CSRF protection for state-changing HTTP routes.
-- [ ] Add secure cookie settings for production.
-- [ ] Add content security policy.
-- [ ] Add rate limits for login.
-- [ ] Add rate limits for terminal creation.
-- [ ] Add node revocation enforcement.
-- [ ] Add secret redaction in logs.
+- [x] Add WebSocket origin validation.
+- [x] Add CSRF protection for state-changing HTTP routes.
+- [x] Add secure cookie settings for production.
+- [x] Add content security policy.
+- [x] Add rate limits for login.
+- [x] Add rate limits for terminal creation.
+- [x] Add node revocation enforcement.
+- [x] Add secret redaction in logs.
 
 ## Production Readiness
 

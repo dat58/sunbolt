@@ -1,3 +1,6 @@
+mod rate_limit;
+mod security;
+
 use std::{
     collections::HashMap,
     env,
@@ -16,9 +19,9 @@ use axum::{
     },
     http::{
         header::{COOKIE, SET_COOKIE},
-        HeaderMap, HeaderValue, StatusCode,
+        HeaderMap, HeaderName, HeaderValue, StatusCode,
     },
-    middleware::{from_fn_with_state, Next},
+    middleware::{from_fn, from_fn_with_state, Next},
     response::IntoResponse,
     response::Response,
     routing::{get, post},
@@ -43,6 +46,8 @@ use tokio::{
     task,
 };
 
+use rate_limit::SlidingWindowRateLimiter;
+
 const OUTPUT_BUFFER_SIZE: usize = 8192;
 const OUTPUT_CHANNEL_CAPACITY: usize = 32;
 const READ_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
@@ -55,6 +60,10 @@ const DEFAULT_MAX_SESSIONS_PER_USER: usize = 5;
 const DEFAULT_MAX_SESSIONS_PER_NODE: usize = 10;
 const DEFAULT_MAX_DURATION: Duration = Duration::from_secs(8 * 60 * 60);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_LOGIN_RATE_WINDOW: Duration = Duration::from_secs(15 * 60);
+const DEFAULT_LOGIN_RATE_MAX: usize = 10;
+const DEFAULT_TERMINAL_RATE_WINDOW: Duration = Duration::from_secs(60);
+const DEFAULT_TERMINAL_RATE_MAX: usize = 5;
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -89,17 +98,25 @@ fn build_router(state: AppState) -> Router {
         state.audit.clone(),
     );
     let auth_layer = from_fn_with_state(state.auth.clone(), require_auth_middleware);
+    let origin_layer = from_fn_with_state(state.allowed_origins.clone(), require_origin_middleware);
 
     Router::new()
         .route(TERMINAL_WS_PATH, get(terminal_websocket))
-        .route(AUTH_LOGIN_PATH, post(auth_login))
+        .route(
+            AUTH_LOGIN_PATH,
+            post(auth_login).layer(origin_layer.clone()),
+        )
         .route(
             AUTH_MFA_STEP_UP_PATH,
-            post(auth_mfa_step_up).layer(auth_layer.clone()),
+            post(auth_mfa_step_up)
+                .layer(auth_layer.clone())
+                .layer(origin_layer.clone()),
         )
         .route(
             AUTH_LOGOUT_PATH,
-            post(auth_logout).layer(auth_layer.clone()),
+            post(auth_logout)
+                .layer(auth_layer.clone())
+                .layer(origin_layer.clone()),
         )
         .route(AUTH_ME_PATH, get(auth_me).layer(auth_layer.clone()))
         .route(
@@ -122,6 +139,7 @@ fn build_router(state: AppState) -> Router {
         )
         .route(AGENT_ENROLL_PATH, post(agent_enroll))
         .route(AGENT_HEARTBEAT_PATH, post(agent_heartbeat))
+        .layer(from_fn(security_headers_middleware))
         .with_state(state)
 }
 
@@ -133,10 +151,18 @@ struct AppState {
     audit: AuditLog,
     node_enrollment: NodeEnrollmentRegistry,
     agent_connections: AgentConnectionRegistry,
+    login_rate_limiter: SlidingWindowRateLimiter,
+    terminal_rate_limiter: SlidingWindowRateLimiter,
+    allowed_origins: Vec<String>,
 }
 
 impl AppState {
     fn from_env() -> Self {
+        let allowed_origins = env::var("SUNBOLT_ALLOWED_ORIGINS")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.split(',').map(|o| o.trim().to_owned()).collect())
+            .unwrap_or_default();
         Self {
             sessions: TerminalSessionRegistry::default(),
             terminal_config: TerminalSessionConfig::from_env(),
@@ -144,6 +170,15 @@ impl AppState {
             audit: AuditLog::default(),
             node_enrollment: NodeEnrollmentRegistry::default(),
             agent_connections: AgentConnectionRegistry::default(),
+            login_rate_limiter: SlidingWindowRateLimiter::new(
+                DEFAULT_LOGIN_RATE_WINDOW,
+                DEFAULT_LOGIN_RATE_MAX,
+            ),
+            terminal_rate_limiter: SlidingWindowRateLimiter::new(
+                DEFAULT_TERMINAL_RATE_WINDOW,
+                DEFAULT_TERMINAL_RATE_MAX,
+            ),
+            allowed_origins,
         }
     }
 }
@@ -432,6 +467,44 @@ impl TerminalSessionRegistry {
                 sessions
                     .remove(&id)
                     .map(|s| (id, s.actor_email, s.output_tx, s.session))
+            })
+            .collect()
+    }
+
+    fn close_sessions_for_node(
+        &self,
+        node_id: &str,
+    ) -> Vec<(
+        TerminalSessionId,
+        String,
+        broadcast::Sender<TerminalServerMessage>,
+        Arc<LocalPtySession>,
+    )> {
+        let Ok(mut sessions) = self.inner.lock() else {
+            return vec![];
+        };
+        let to_close: Vec<TerminalSessionId> = sessions
+            .iter()
+            .filter(|(_, s)| {
+                s.node_id.as_deref() == Some(node_id)
+                    && !matches!(
+                        s.state,
+                        TerminalSessionState::Closing | TerminalSessionState::Closed
+                    )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        to_close
+            .into_iter()
+            .filter_map(|session_id| {
+                let s = sessions.get_mut(&session_id)?;
+                s.state = TerminalSessionState::Closing;
+                Some((
+                    session_id,
+                    s.actor_email.clone(),
+                    s.output_tx.clone(),
+                    Arc::clone(&s.session),
+                ))
             })
             .collect()
     }
@@ -877,6 +950,20 @@ async fn auth_login(
     State(state): State<AppState>,
     Json(request): Json<LoginRequest>,
 ) -> impl IntoResponse {
+    if !state.login_rate_limiter.check_and_record(&request.email) {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::UserLoginFailed,
+            actor_email: Some(request.email.clone()),
+            message: "login rate limit exceeded".to_owned(),
+        });
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "too many login attempts",
+            }),
+        )
+            .into_response();
+    }
     match state.auth.login(&request.email, &request.password) {
         Ok((user, session_token)) => {
             state.audit.record(AuditEventInput {
@@ -1049,6 +1136,26 @@ async fn revoke_node(
 ) -> impl IntoResponse {
     match state.node_enrollment.revoke_node(&node_id) {
         Ok(node) => {
+            let closed = state.sessions.close_sessions_for_node(&node_id);
+            for (session_id, actor_email_session, output_tx, pty_session) in closed {
+                let _ = output_tx.send(TerminalServerMessage::Error {
+                    session_id: Some(session_id.clone()),
+                    error: protocol_error_text(
+                        TerminalErrorCode::TerminalUnavailable,
+                        "node revoked",
+                    ),
+                });
+                let _ = pty_session.close();
+                state.audit.record(AuditEventInput {
+                    kind: AuditEventKind::TerminalClosed,
+                    actor_email: Some(actor_email_session),
+                    message: security::redact_sensitive(&format!(
+                        "terminal session {} closed: node {node_id} revoked",
+                        session_id.0
+                    ))
+                    .into_owned(),
+                });
+            }
             state.agent_connections.disconnect(&node_id);
             state.audit.record(AuditEventInput {
                 kind: AuditEventKind::NodeRevoked,
@@ -1169,11 +1276,47 @@ async fn require_auth_middleware(
     next.run(request).await
 }
 
+async fn security_headers_middleware(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(security::CSP_HEADER_VALUE),
+    );
+    response
+}
+
+async fn require_origin_middleware(
+    State(allowed_origins): State<Vec<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !security::is_allowed_origin(request.headers(), &allowed_origins) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "cross-origin request rejected",
+            }),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
 async fn terminal_websocket(
     State(state): State<AppState>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    if !security::is_allowed_origin(&headers, &state.allowed_origins) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "cross-origin websocket request rejected",
+            }),
+        )
+            .into_response();
+    }
+
     let user = match authorize_terminal_request(&state.auth, &headers) {
         Ok(user) => user,
         Err(error) => {
@@ -1196,6 +1339,21 @@ async fn terminal_websocket(
                 .into_response();
         }
     };
+
+    if !state.terminal_rate_limiter.check_and_record(&user.email) {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalFailed,
+            actor_email: Some(user.email.clone()),
+            message: "terminal creation rate limit exceeded".to_owned(),
+        });
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "terminal creation rate limit exceeded",
+            }),
+        )
+            .into_response();
+    }
 
     ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, user.email))
         .into_response()
@@ -2403,11 +2561,11 @@ mod tests {
     use super::{
         authorize_terminal_request, build_router, component_name, exit_message,
         parse_client_message, terminal_size_from_protocol, AgentConnectionRegistry, AppState,
-        NodeEnrollmentRegistry, SessionLimitError, TerminalAuthorizationError,
-        TerminalSessionConfig, TerminalSessionRegistry, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH,
-        AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH,
-        AUTH_MFA_STEP_UP_PATH, ENROLLMENT_TOKENS_PATH, NODES_PATH, SESSION_COOKIE_NAME,
-        TERMINAL_WS_PATH,
+        NodeEnrollmentRegistry, SessionLimitError, SlidingWindowRateLimiter,
+        TerminalAuthorizationError, TerminalSessionConfig, TerminalSessionRegistry,
+        ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
+        AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
+        ENROLLMENT_TOKENS_PATH, NODES_PATH, SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
@@ -3316,6 +3474,9 @@ mod tests {
             audit: sunbolt_audit::AuditLog::default(),
             node_enrollment: NodeEnrollmentRegistry::default(),
             agent_connections: AgentConnectionRegistry::default(),
+            login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
+            terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
+            allowed_origins: vec![],
         })
     }
 
@@ -3441,5 +3602,143 @@ mod tests {
             .next()
             .expect("cookie should contain a token")
             .to_owned()
+    }
+
+    #[tokio::test]
+    async fn security_headers_are_present_on_all_responses() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(AUTH_ME_PATH)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        let csp = response
+            .headers()
+            .get("content-security-policy")
+            .expect("CSP header should be present");
+        assert!(csp
+            .to_str()
+            .expect("CSP header should be utf-8")
+            .contains("default-src 'self'"));
+    }
+
+    #[tokio::test]
+    async fn login_rate_limit_blocks_excessive_attempts() {
+        let auth = test_auth_service();
+        let router = build_router(AppState {
+            sessions: TerminalSessionRegistry::default(),
+            terminal_config: TerminalSessionConfig::from_env(),
+            auth,
+            audit: sunbolt_audit::AuditLog::default(),
+            node_enrollment: NodeEnrollmentRegistry::default(),
+            agent_connections: AgentConnectionRegistry::default(),
+            login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 2),
+            terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
+            allowed_origins: vec![],
+        });
+
+        let make_request = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri(AUTH_LOGIN_PATH)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"email": "admin@example.com", "password": "wrong"}).to_string(),
+                ))
+                .expect("request should build")
+        };
+
+        let r1 = router
+            .clone()
+            .oneshot(make_request())
+            .await
+            .expect("should respond");
+        assert_eq!(r1.status(), StatusCode::UNAUTHORIZED);
+
+        let r2 = router
+            .clone()
+            .oneshot(make_request())
+            .await
+            .expect("should respond");
+        assert_eq!(r2.status(), StatusCode::UNAUTHORIZED);
+
+        let r3 = router
+            .clone()
+            .oneshot(make_request())
+            .await
+            .expect("should respond");
+        assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn cross_origin_login_is_rejected_when_origin_list_is_configured() {
+        let auth = test_auth_service();
+        let router = build_router(AppState {
+            sessions: TerminalSessionRegistry::default(),
+            terminal_config: TerminalSessionConfig::from_env(),
+            auth,
+            audit: sunbolt_audit::AuditLog::default(),
+            node_enrollment: NodeEnrollmentRegistry::default(),
+            agent_connections: AgentConnectionRegistry::default(),
+            login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
+            terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
+            allowed_origins: vec!["http://localhost:3000".to_owned()],
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AUTH_LOGIN_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("origin", "http://evil.example.com")
+                    .body(Body::from(
+                        json!({"email": "admin@example.com", "password": "admin-password"})
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn allowed_origin_login_succeeds() {
+        let auth = test_auth_service();
+        let router = build_router(AppState {
+            sessions: TerminalSessionRegistry::default(),
+            terminal_config: TerminalSessionConfig::from_env(),
+            auth,
+            audit: sunbolt_audit::AuditLog::default(),
+            node_enrollment: NodeEnrollmentRegistry::default(),
+            agent_connections: AgentConnectionRegistry::default(),
+            login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
+            terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
+            allowed_origins: vec!["http://localhost:3000".to_owned()],
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AUTH_LOGIN_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("origin", "http://localhost:3000")
+                    .body(Body::from(
+                        json!({"email": "admin@example.com", "password": "admin-password"})
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
