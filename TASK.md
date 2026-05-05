@@ -300,11 +300,11 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 - [x] Add detach/reattach model.
 - [x] Keep PTY alive during short browser disconnect.
 - [x] Add reconnect token.
-- [ ] Add session cleanup worker.
-- [ ] Add per-user session limit.
-- [ ] Add per-node session limit.
-- [ ] Add terminal idle timeout.
-- [ ] Add terminal absolute max duration.
+- [x] Add session cleanup worker.
+- [x] Add per-user session limit.
+- [x] Add per-node session limit.
+- [x] Add terminal idle timeout.
+- [x] Add terminal absolute max duration.
 
 ## Audit Hardening
 

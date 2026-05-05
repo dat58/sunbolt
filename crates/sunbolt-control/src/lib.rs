@@ -51,6 +51,10 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DEFAULT_DISCONNECT_GRACE: Duration = Duration::from_secs(30);
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const NODE_OFFLINE_AFTER: Duration = Duration::from_secs(90);
+const DEFAULT_MAX_SESSIONS_PER_USER: usize = 5;
+const DEFAULT_MAX_SESSIONS_PER_NODE: usize = 10;
+const DEFAULT_MAX_DURATION: Duration = Duration::from_secs(8 * 60 * 60);
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -79,6 +83,11 @@ pub fn router() -> Router {
 }
 
 fn build_router(state: AppState) -> Router {
+    spawn_session_cleanup_worker(
+        state.sessions.clone(),
+        state.terminal_config,
+        state.audit.clone(),
+    );
     let auth_layer = from_fn_with_state(state.auth.clone(), require_auth_middleware);
 
     Router::new()
@@ -142,7 +151,10 @@ impl AppState {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 struct TerminalSessionConfig {
     max_sessions: usize,
+    max_sessions_per_user: usize,
+    max_sessions_per_node: usize,
     idle_timeout: Duration,
+    max_duration: Duration,
     disconnect_grace: Duration,
 }
 
@@ -151,10 +163,33 @@ impl TerminalSessionConfig {
         Self {
             max_sessions: env_usize("SUNBOLT_MAX_TERMINAL_SESSIONS")
                 .unwrap_or(DEFAULT_MAX_TERMINAL_SESSIONS),
+            max_sessions_per_user: env_usize("SUNBOLT_MAX_TERMINAL_SESSIONS_PER_USER")
+                .unwrap_or(DEFAULT_MAX_SESSIONS_PER_USER),
+            max_sessions_per_node: env_usize("SUNBOLT_MAX_TERMINAL_SESSIONS_PER_NODE")
+                .unwrap_or(DEFAULT_MAX_SESSIONS_PER_NODE),
             idle_timeout: env_duration_secs("SUNBOLT_TERMINAL_IDLE_TIMEOUT_SECS")
                 .unwrap_or(DEFAULT_IDLE_TIMEOUT),
+            max_duration: env_duration_secs("SUNBOLT_TERMINAL_MAX_DURATION_SECS")
+                .unwrap_or(DEFAULT_MAX_DURATION),
             disconnect_grace: env_duration_secs("SUNBOLT_TERMINAL_DISCONNECT_GRACE_SECS")
                 .unwrap_or(DEFAULT_DISCONNECT_GRACE),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SessionLimitError {
+    GlobalCapacity,
+    PerUser,
+    PerNode,
+}
+
+impl SessionLimitError {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::GlobalCapacity => "maximum terminal session count reached",
+            Self::PerUser => "maximum terminal sessions per user reached",
+            Self::PerNode => "maximum terminal sessions per node reached",
         }
     }
 }
@@ -170,7 +205,10 @@ struct TrackedTerminalSession {
     reconnect_token: TerminalReconnectToken,
     state: TerminalSessionState,
     last_activity: Instant,
+    created_at: Instant,
     size: ProtocolTerminalSize,
+    actor_email: String,
+    node_id: Option<String>,
 }
 
 impl TerminalSessionRegistry {
@@ -179,15 +217,42 @@ impl TerminalSessionRegistry {
         session_id: TerminalSessionId,
         session: Arc<LocalPtySession>,
         size: ProtocolTerminalSize,
-        max_sessions: usize,
-    ) -> Option<broadcast::Sender<TerminalServerMessage>> {
+        config: TerminalSessionConfig,
+        actor_email: String,
+        node_id: Option<String>,
+    ) -> Result<broadcast::Sender<TerminalServerMessage>, SessionLimitError> {
         let Ok(mut sessions) = self.inner.lock() else {
-            return None;
+            return Err(SessionLimitError::GlobalCapacity);
         };
-        if sessions.len() >= max_sessions {
-            return None;
+        if sessions.len() >= config.max_sessions {
+            return Err(SessionLimitError::GlobalCapacity);
         }
-
+        let user_count = sessions
+            .values()
+            .filter(|s| {
+                s.actor_email == actor_email
+                    && !matches!(
+                        s.state,
+                        TerminalSessionState::Closing | TerminalSessionState::Closed
+                    )
+            })
+            .count();
+        if user_count >= config.max_sessions_per_user {
+            return Err(SessionLimitError::PerUser);
+        }
+        let node_count = sessions
+            .values()
+            .filter(|s| {
+                s.node_id.as_deref() == node_id.as_deref()
+                    && !matches!(
+                        s.state,
+                        TerminalSessionState::Closing | TerminalSessionState::Closed
+                    )
+            })
+            .count();
+        if node_count >= config.max_sessions_per_node {
+            return Err(SessionLimitError::PerNode);
+        }
         let (output_tx, _) = broadcast::channel(OUTPUT_CHANNEL_CAPACITY);
         sessions.insert(
             session_id,
@@ -197,10 +262,13 @@ impl TerminalSessionRegistry {
                 reconnect_token: TerminalReconnectToken(random_token()),
                 state: TerminalSessionState::Starting,
                 last_activity: Instant::now(),
+                created_at: Instant::now(),
                 size,
+                actor_email,
+                node_id,
             },
         );
-        Some(output_tx)
+        Ok(output_tx)
     }
 
     fn set_state(&self, session_id: &TerminalSessionId, state: TerminalSessionState) {
@@ -320,6 +388,52 @@ impl TerminalSessionRegistry {
             .lock()
             .ok()
             .and_then(|sessions| sessions.get(session_id).map(|session| session.state))
+    }
+
+    fn is_exceeded_max_duration(
+        &self,
+        session_id: &TerminalSessionId,
+        max_duration: Duration,
+    ) -> bool {
+        let Ok(sessions) = self.inner.lock() else {
+            return true;
+        };
+        sessions
+            .get(session_id)
+            .is_none_or(|session| session.created_at.elapsed() >= max_duration)
+    }
+
+    fn drain_exceeded_max_duration(
+        &self,
+        max_duration: Duration,
+    ) -> Vec<(
+        TerminalSessionId,
+        String,
+        broadcast::Sender<TerminalServerMessage>,
+        Arc<LocalPtySession>,
+    )> {
+        let Ok(mut sessions) = self.inner.lock() else {
+            return vec![];
+        };
+        let expired: Vec<TerminalSessionId> = sessions
+            .iter()
+            .filter(|(_, session)| {
+                session.created_at.elapsed() >= max_duration
+                    && !matches!(
+                        session.state,
+                        TerminalSessionState::Closing | TerminalSessionState::Closed
+                    )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        expired
+            .into_iter()
+            .filter_map(|id| {
+                sessions
+                    .remove(&id)
+                    .map(|s| (id, s.actor_email, s.output_tx, s.session))
+            })
+            .collect()
     }
 }
 
@@ -1195,30 +1309,35 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
         }
     };
 
-    let Some(output_tx) = state.sessions.insert(
+    let output_tx = match state.sessions.insert(
         session_id.clone(),
         Arc::clone(&session),
         start.initial_size,
-        state.terminal_config.max_sessions,
-    ) else {
-        state.audit.record(AuditEventInput {
-            kind: AuditEventKind::TerminalFailed,
-            actor_email: Some(actor_email),
-            message: "maximum terminal session count reached".to_owned(),
-        });
-        let _ = session.close();
-        let _ = send_server_message(
-            &mut socket,
-            TerminalServerMessage::Error {
-                session_id: Some(session_id),
-                error: protocol_error_text(
-                    TerminalErrorCode::TerminalUnavailable,
-                    "maximum terminal session count reached",
-                ),
-            },
-        )
-        .await;
-        return;
+        state.terminal_config,
+        actor_email.clone(),
+        None,
+    ) {
+        Ok(tx) => tx,
+        Err(limit_error) => {
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::TerminalFailed,
+                actor_email: Some(actor_email),
+                message: limit_error.message().to_owned(),
+            });
+            let _ = session.close();
+            let _ = send_server_message(
+                &mut socket,
+                TerminalServerMessage::Error {
+                    session_id: Some(session_id),
+                    error: protocol_error_text(
+                        TerminalErrorCode::TerminalUnavailable,
+                        limit_error.message(),
+                    ),
+                },
+            )
+            .await;
+            return;
+        }
     };
 
     if send_server_message(
@@ -1321,6 +1440,23 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
                             error: protocol_error_text(
                                 TerminalErrorCode::TerminalUnavailable,
                                 "terminal session idle timeout reached",
+                            ),
+                        },
+                    )
+                    .await;
+                    break;
+                } else if state
+                    .sessions
+                    .is_exceeded_max_duration(&session_id, state.terminal_config.max_duration)
+                {
+                    state.sessions.set_state(&session_id, TerminalSessionState::Closing);
+                    let _ = send_split_server_message(
+                        &mut sender,
+                        TerminalServerMessage::Error {
+                            session_id: Some(session_id.clone()),
+                            error: protocol_error_text(
+                                TerminalErrorCode::TerminalUnavailable,
+                                "terminal session exceeded maximum allowed duration",
                             ),
                         },
                     )
@@ -1462,6 +1598,23 @@ async fn handle_local_terminal_reattach(
                     )
                     .await;
                     break;
+                } else if state
+                    .sessions
+                    .is_exceeded_max_duration(&session_id, state.terminal_config.max_duration)
+                {
+                    state.sessions.set_state(&session_id, TerminalSessionState::Closing);
+                    let _ = send_split_server_message(
+                        &mut sender,
+                        TerminalServerMessage::Error {
+                            session_id: Some(session_id.clone()),
+                            error: protocol_error_text(
+                                TerminalErrorCode::TerminalUnavailable,
+                                "terminal session exceeded maximum allowed duration",
+                            ),
+                        },
+                    )
+                    .await;
+                    break;
                 }
             }
         }
@@ -1511,6 +1664,39 @@ fn schedule_cleanup_if_detached(state: &AppState, session_id: &TerminalSessionId
         session_id.clone(),
         state.terminal_config.disconnect_grace,
     );
+}
+
+fn spawn_session_cleanup_worker(
+    sessions: TerminalSessionRegistry,
+    config: TerminalSessionConfig,
+    audit: AuditLog,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let expired = sessions.drain_exceeded_max_duration(config.max_duration);
+            for (session_id, actor_email, output_tx, pty_session) in expired {
+                let _ = output_tx.send(TerminalServerMessage::Error {
+                    session_id: Some(session_id.clone()),
+                    error: protocol_error_text(
+                        TerminalErrorCode::TerminalUnavailable,
+                        "terminal session exceeded maximum allowed duration",
+                    ),
+                });
+                let _ = pty_session.close();
+                audit.record(AuditEventInput {
+                    kind: AuditEventKind::TerminalClosed,
+                    actor_email: Some(actor_email),
+                    message: format!(
+                        "terminal session {} forcibly closed: exceeded max duration",
+                        session_id.0
+                    ),
+                });
+            }
+        }
+    });
 }
 
 struct StartTerminal {
@@ -2217,10 +2403,11 @@ mod tests {
     use super::{
         authorize_terminal_request, build_router, component_name, exit_message,
         parse_client_message, terminal_size_from_protocol, AgentConnectionRegistry, AppState,
-        NodeEnrollmentRegistry, TerminalAuthorizationError, TerminalSessionConfig,
-        TerminalSessionRegistry, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH,
-        AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
-        ENROLLMENT_TOKENS_PATH, NODES_PATH, SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
+        NodeEnrollmentRegistry, SessionLimitError, TerminalAuthorizationError,
+        TerminalSessionConfig, TerminalSessionRegistry, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH,
+        AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH,
+        AUTH_MFA_STEP_UP_PATH, ENROLLMENT_TOKENS_PATH, NODES_PATH, SESSION_COOKIE_NAME,
+        TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
@@ -2259,7 +2446,10 @@ mod tests {
         let config = TerminalSessionConfig::from_env();
 
         assert!(config.max_sessions > 0);
+        assert!(config.max_sessions_per_user > 0);
+        assert!(config.max_sessions_per_node > 0);
         assert!(config.idle_timeout >= Duration::from_secs(60));
+        assert!(config.max_duration >= Duration::from_secs(60 * 60));
     }
 
     #[test]
@@ -2275,14 +2465,24 @@ mod tests {
                 .expect("test shell should spawn"),
         );
 
+        let config = TerminalSessionConfig {
+            max_sessions: 1,
+            max_sessions_per_user: 5,
+            max_sessions_per_node: 10,
+            idle_timeout: Duration::from_secs(30 * 60),
+            max_duration: Duration::from_secs(8 * 60 * 60),
+            disconnect_grace: Duration::from_secs(30),
+        };
         assert!(registry
             .insert(
                 session_id.clone(),
                 Arc::clone(&session),
                 TerminalSize { cols: 80, rows: 24 },
-                1
+                config,
+                "test@example.com".to_owned(),
+                None,
             )
-            .is_some());
+            .is_ok());
         assert_eq!(registry.len(), 1);
         assert_eq!(
             registry.state(&session_id),
@@ -2326,13 +2526,186 @@ mod tests {
                 TerminalSessionId("session-2".to_owned()),
                 Arc::clone(&session),
                 TerminalSize { cols: 80, rows: 24 },
-                1
+                config,
+                "test@example.com".to_owned(),
+                None,
             )
-            .is_none());
+            .is_err());
 
         registry.remove(&session_id);
         assert_eq!(registry.len(), 0);
         assert!(session.is_closed());
+    }
+
+    #[test]
+    fn per_user_session_limit_is_enforced() {
+        let Some(shell) = test_shell() else {
+            return;
+        };
+
+        let registry = TerminalSessionRegistry::default();
+        let config = TerminalSessionConfig {
+            max_sessions: 10,
+            max_sessions_per_user: 2,
+            max_sessions_per_node: 10,
+            idle_timeout: Duration::from_secs(30 * 60),
+            max_duration: Duration::from_secs(8 * 60 * 60),
+            disconnect_grace: Duration::from_secs(30),
+        };
+        let spawn_session = || {
+            Arc::new(
+                LocalPtySession::spawn_shell(shell.clone(), PtyTerminalSize::new(80, 24))
+                    .expect("test shell should spawn"),
+            )
+        };
+
+        assert!(registry
+            .insert(
+                TerminalSessionId("s1".to_owned()),
+                spawn_session(),
+                TerminalSize { cols: 80, rows: 24 },
+                config,
+                "alice@example.com".to_owned(),
+                None,
+            )
+            .is_ok());
+        assert!(registry
+            .insert(
+                TerminalSessionId("s2".to_owned()),
+                spawn_session(),
+                TerminalSize { cols: 80, rows: 24 },
+                config,
+                "alice@example.com".to_owned(),
+                None,
+            )
+            .is_ok());
+
+        let err = registry
+            .insert(
+                TerminalSessionId("s3".to_owned()),
+                spawn_session(),
+                TerminalSize { cols: 80, rows: 24 },
+                config,
+                "alice@example.com".to_owned(),
+                None,
+            )
+            .expect_err("user limit should be enforced");
+        assert_eq!(err, SessionLimitError::PerUser);
+
+        assert!(registry
+            .insert(
+                TerminalSessionId("s4".to_owned()),
+                spawn_session(),
+                TerminalSize { cols: 80, rows: 24 },
+                config,
+                "bob@example.com".to_owned(),
+                None,
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn per_node_session_limit_is_enforced() {
+        let Some(shell) = test_shell() else {
+            return;
+        };
+
+        let registry = TerminalSessionRegistry::default();
+        let config = TerminalSessionConfig {
+            max_sessions: 10,
+            max_sessions_per_user: 10,
+            max_sessions_per_node: 2,
+            idle_timeout: Duration::from_secs(30 * 60),
+            max_duration: Duration::from_secs(8 * 60 * 60),
+            disconnect_grace: Duration::from_secs(30),
+        };
+        let spawn_session = || {
+            Arc::new(
+                LocalPtySession::spawn_shell(shell.clone(), PtyTerminalSize::new(80, 24))
+                    .expect("test shell should spawn"),
+            )
+        };
+
+        assert!(registry
+            .insert(
+                TerminalSessionId("s1".to_owned()),
+                spawn_session(),
+                TerminalSize { cols: 80, rows: 24 },
+                config,
+                "user1@example.com".to_owned(),
+                Some("node-1".to_owned()),
+            )
+            .is_ok());
+        assert!(registry
+            .insert(
+                TerminalSessionId("s2".to_owned()),
+                spawn_session(),
+                TerminalSize { cols: 80, rows: 24 },
+                config,
+                "user2@example.com".to_owned(),
+                Some("node-1".to_owned()),
+            )
+            .is_ok());
+
+        let err = registry
+            .insert(
+                TerminalSessionId("s3".to_owned()),
+                spawn_session(),
+                TerminalSize { cols: 80, rows: 24 },
+                config,
+                "user3@example.com".to_owned(),
+                Some("node-1".to_owned()),
+            )
+            .expect_err("node limit should be enforced");
+        assert_eq!(err, SessionLimitError::PerNode);
+
+        assert!(registry
+            .insert(
+                TerminalSessionId("s4".to_owned()),
+                spawn_session(),
+                TerminalSize { cols: 80, rows: 24 },
+                config,
+                "user3@example.com".to_owned(),
+                Some("node-2".to_owned()),
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn cleanup_removes_sessions_exceeding_max_duration() {
+        let Some(shell) = test_shell() else {
+            return;
+        };
+
+        let registry = TerminalSessionRegistry::default();
+        let config = TerminalSessionConfig {
+            max_sessions: 10,
+            max_sessions_per_user: 5,
+            max_sessions_per_node: 10,
+            idle_timeout: Duration::from_secs(30 * 60),
+            max_duration: Duration::from_secs(8 * 60 * 60),
+            disconnect_grace: Duration::from_secs(30),
+        };
+        let session = Arc::new(
+            LocalPtySession::spawn_shell(shell, PtyTerminalSize::new(80, 24))
+                .expect("test shell should spawn"),
+        );
+        assert!(registry
+            .insert(
+                TerminalSessionId("session-1".to_owned()),
+                session,
+                TerminalSize { cols: 80, rows: 24 },
+                config,
+                "test@example.com".to_owned(),
+                None,
+            )
+            .is_ok());
+        assert_eq!(registry.len(), 1);
+
+        // Duration::ZERO means every session has exceeded max duration immediately
+        let expired = registry.drain_exceeded_max_duration(Duration::ZERO);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(registry.len(), 0);
     }
 
     #[test]
