@@ -268,10 +268,10 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## WebAuthn / Passkeys
 
-- [ ] Research WebAuthn crate choice.
-- [ ] Add passkey registration challenge.
-- [ ] Add passkey authentication challenge.
-- [ ] Add passkey management UI.
+- [x] Research WebAuthn crate choice.
+- [x] Add passkey registration challenge.
+- [x] Add passkey authentication challenge.
+- [x] Add passkey management UI.
 
 ## Step-up MFA
 

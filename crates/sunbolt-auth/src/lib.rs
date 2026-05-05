@@ -14,12 +14,17 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 mod mfa;
+mod passkeys;
 mod recovery_codes;
 mod totp;
 
 pub use mfa::{
     AuthContext, AuthFactor, AuthFactorEnrollment, FactorChallenge, FactorResponse, FactorResult,
     FactorType, MfaPurpose,
+};
+pub use passkeys::{
+    recommended_webauthn_crate, PasskeyAuthenticationChallenge, PasskeyCredential,
+    PasskeyRegistrationChallenge, WebAuthnCrateChoice,
 };
 pub use recovery_codes::RecoveryCodeBatch;
 pub use totp::{TotpConfig, TotpEnrollment, TotpFactor, TotpRecoveryPath, TotpSecret};
@@ -105,6 +110,10 @@ struct AuthStore {
     sessions_by_token: HashMap<String, SessionRecord>,
     auth_factors_by_id: HashMap<u64, AuthFactorEnrollment>,
     factor_ids_by_user_id: HashMap<u64, Vec<u64>>,
+    passkey_authentication_challenges_by_id: HashMap<String, PasskeyAuthenticationChallenge>,
+    passkey_credentials_by_id: HashMap<u64, PasskeyCredential>,
+    passkey_credential_ids_by_user_id: HashMap<u64, Vec<u64>>,
+    passkey_registration_challenges_by_id: HashMap<String, PasskeyRegistrationChallenge>,
     recovery_codes_by_factor_id: HashMap<u64, Vec<recovery_codes::StoredRecoveryCode>>,
     totp_secrets_by_factor_id: HashMap<u64, TotpSecret>,
 }
@@ -115,6 +124,7 @@ pub struct AuthService {
     store: Arc<Mutex<AuthStore>>,
     next_user_id: Arc<AtomicU64>,
     next_factor_id: Arc<AtomicU64>,
+    next_passkey_credential_id: Arc<AtomicU64>,
     config: AuthConfig,
 }
 
@@ -132,6 +142,7 @@ impl AuthService {
             store: Arc::new(Mutex::new(AuthStore::default())),
             next_user_id: Arc::new(AtomicU64::new(1)),
             next_factor_id: Arc::new(AtomicU64::new(1)),
+            next_passkey_credential_id: Arc::new(AtomicU64::new(1)),
             config,
         };
         if service.config.bootstrap_admin {
@@ -453,6 +464,147 @@ impl AuthService {
         })
     }
 
+    /// Begins a passkey registration ceremony.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the relying party settings are invalid or auth
+    /// state cannot be accessed.
+    pub fn begin_passkey_registration(
+        &self,
+        user: &User,
+        relying_party_id: &str,
+        origin: &str,
+    ) -> Result<PasskeyRegistrationChallenge, AuthError> {
+        validate_passkey_relying_party(relying_party_id, origin)?;
+        let challenge = passkeys::registration_challenge(
+            user.id,
+            &user.email,
+            relying_party_id,
+            sunbolt_common::product_name(),
+            origin,
+        );
+        self.store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("passkeys"))?
+            .passkey_registration_challenges_by_id
+            .insert(challenge.challenge_id.clone(), challenge.clone());
+        Ok(challenge)
+    }
+
+    /// Stores passkey credential metadata after browser-side registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the registration challenge is missing, the label
+    /// is empty, or auth state cannot be accessed.
+    pub fn register_passkey_credential(
+        &self,
+        user_id: u64,
+        challenge_id: &str,
+        credential_id: &str,
+        public_key: &str,
+        label: &str,
+    ) -> Result<PasskeyCredential, AuthError> {
+        if label.trim().is_empty()
+            || credential_id.trim().is_empty()
+            || public_key.trim().is_empty()
+        {
+            return Err(AuthError::InvalidPasskeyCredential);
+        }
+
+        let factor = self.ensure_passkey_factor(user_id)?;
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("passkeys"))?;
+        let Some(challenge) = store
+            .passkey_registration_challenges_by_id
+            .remove(challenge_id)
+        else {
+            return Err(AuthError::PasskeyChallengeNotFound);
+        };
+        if challenge.user_id != user_id {
+            return Err(AuthError::PasskeyChallengeNotFound);
+        }
+
+        let credential = passkeys::credential(
+            self.next_passkey_credential_id
+                .fetch_add(1, Ordering::Relaxed),
+            user_id,
+            credential_id,
+            public_key,
+            label,
+        );
+        store
+            .passkey_credential_ids_by_user_id
+            .entry(user_id)
+            .or_default()
+            .push(credential.id);
+        store
+            .passkey_credentials_by_id
+            .insert(credential.id, credential.clone());
+        store.auth_factors_by_id.insert(factor.id, factor);
+        Ok(credential)
+    }
+
+    /// Begins a passkey authentication ceremony for an enrolled user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the user has no passkeys, relying party settings
+    /// are invalid, or auth state cannot be accessed.
+    pub fn begin_passkey_authentication(
+        &self,
+        user: &User,
+        relying_party_id: &str,
+        origin: &str,
+    ) -> Result<PasskeyAuthenticationChallenge, AuthError> {
+        validate_passkey_relying_party(relying_party_id, origin)?;
+        let allowed_credential_ids = self
+            .passkeys_for_user(user.id)?
+            .into_iter()
+            .map(|credential| credential.credential_id)
+            .collect::<Vec<_>>();
+        if allowed_credential_ids.is_empty() {
+            return Err(AuthError::PasskeyCredentialUnavailable);
+        }
+
+        let challenge = passkeys::authentication_challenge(
+            user.id,
+            relying_party_id,
+            origin,
+            allowed_credential_ids,
+        );
+        self.store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("passkeys"))?
+            .passkey_authentication_challenges_by_id
+            .insert(challenge.challenge_id.clone(), challenge.clone());
+        Ok(challenge)
+    }
+
+    /// Returns enabled passkey credentials for a user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when auth state cannot be accessed.
+    pub fn passkeys_for_user(&self, user_id: u64) -> Result<Vec<PasskeyCredential>, AuthError> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("passkeys"))?;
+        Ok(store
+            .passkey_credential_ids_by_user_id
+            .get(&user_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|credential_id| store.passkey_credentials_by_id.get(credential_id))
+            .filter(|credential| credential.enabled)
+            .cloned()
+            .collect())
+    }
+
     /// Returns enabled MFA factors for a user.
     ///
     /// # Errors
@@ -668,6 +820,31 @@ impl AuthService {
         store.recovery_codes_by_factor_id.insert(factor_id, records);
         Ok(())
     }
+
+    fn ensure_passkey_factor(&self, user_id: u64) -> Result<AuthFactorEnrollment, AuthError> {
+        if let Some(factor) = self.passkey_factor_for_user(user_id)? {
+            return Ok(factor);
+        }
+        self.enroll_factor(user_id, FactorType::WebAuthn, "Passkeys")
+    }
+
+    fn passkey_factor_for_user(
+        &self,
+        user_id: u64,
+    ) -> Result<Option<AuthFactorEnrollment>, AuthError> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| AuthError::StoreUnavailable("passkeys"))?;
+        Ok(store
+            .factor_ids_by_user_id
+            .get(&user_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|factor_id| store.auth_factors_by_id.get(factor_id))
+            .find(|factor| factor.enabled && factor.factor_type == FactorType::WebAuthn)
+            .cloned())
+    }
 }
 
 /// Permission identifiers are resource-oriented strings.
@@ -703,8 +880,23 @@ pub enum AuthError {
     TotpSecretMissing,
     #[error("recovery code is invalid or already used")]
     RecoveryCodeInvalid,
+    #[error("invalid passkey relying party settings")]
+    InvalidPasskeyRelyingParty,
+    #[error("invalid passkey credential metadata")]
+    InvalidPasskeyCredential,
+    #[error("passkey challenge was not found")]
+    PasskeyChallengeNotFound,
+    #[error("passkey credential is not available")]
+    PasskeyCredentialUnavailable,
     #[error("internal auth store is unavailable: {0}")]
     StoreUnavailable(&'static str),
+}
+
+fn validate_passkey_relying_party(relying_party_id: &str, origin: &str) -> Result<(), AuthError> {
+    if relying_party_id.trim().is_empty() || origin.trim().is_empty() {
+        return Err(AuthError::InvalidPasskeyRelyingParty);
+    }
+    Ok(())
 }
 
 fn normalize_email(email: &str) -> String {
@@ -1043,6 +1235,103 @@ mod tests {
             auth.verify_recovery_code(&user, &old_code),
             Err(AuthError::RecoveryCodeInvalid)
         ));
+    }
+
+    #[test]
+    fn auth_service_records_webauthn_crate_choice() {
+        let choice = super::recommended_webauthn_crate();
+
+        assert_eq!(choice.crate_name, "webauthn-rs");
+        assert!(choice.rationale.contains("Sunbolt"));
+    }
+
+    #[test]
+    fn auth_service_begins_passkey_registration_challenge() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+
+        let challenge = auth
+            .begin_passkey_registration(&user, "localhost", "http://localhost:3000")
+            .expect("passkey registration should begin");
+
+        assert_eq!(challenge.user_id, user.id);
+        assert_eq!(challenge.user_email, user.email);
+        assert_eq!(challenge.relying_party_name, "Sunbolt");
+        assert!(!challenge.challenge.is_empty());
+    }
+
+    #[test]
+    fn auth_service_registers_and_lists_passkey_credentials() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+        let challenge = auth
+            .begin_passkey_registration(&user, "localhost", "http://localhost:3000")
+            .expect("passkey registration should begin");
+
+        let credential = auth
+            .register_passkey_credential(
+                user.id,
+                &challenge.challenge_id,
+                "credential-1",
+                "public-key-1",
+                "Laptop passkey",
+            )
+            .expect("passkey credential should register");
+        let credentials = auth
+            .passkeys_for_user(user.id)
+            .expect("passkeys should list");
+        let factors = auth.factors_for_user(user.id).expect("factors should list");
+
+        assert_eq!(credential.credential_id, "credential-1");
+        assert_eq!(credentials, vec![credential]);
+        assert!(factors
+            .iter()
+            .any(|factor| factor.factor_type == FactorType::WebAuthn));
+    }
+
+    #[test]
+    fn auth_service_begins_passkey_authentication_challenge() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+        let registration = auth
+            .begin_passkey_registration(&user, "localhost", "http://localhost:3000")
+            .expect("passkey registration should begin");
+        auth.register_passkey_credential(
+            user.id,
+            &registration.challenge_id,
+            "credential-1",
+            "public-key-1",
+            "Laptop passkey",
+        )
+        .expect("passkey credential should register");
+
+        let authentication = auth
+            .begin_passkey_authentication(&user, "localhost", "http://localhost:3000")
+            .expect("passkey authentication should begin");
+
+        assert_eq!(authentication.user_id, user.id);
+        assert_eq!(authentication.allowed_credential_ids, vec!["credential-1"]);
+        assert!(!authentication.challenge.is_empty());
+    }
+
+    #[test]
+    fn auth_service_rejects_passkey_authentication_without_credentials() {
+        let auth = test_auth_service();
+        let user = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+
+        let error = auth
+            .begin_passkey_authentication(&user, "localhost", "http://localhost:3000")
+            .expect_err("missing credential should reject authentication");
+
+        assert!(matches!(error, AuthError::PasskeyCredentialUnavailable));
     }
 
     fn test_auth_service() -> AuthService {

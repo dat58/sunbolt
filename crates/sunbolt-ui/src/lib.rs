@@ -91,6 +91,15 @@ pub fn App() -> Element {
                             onclick: move |_| page.set(ShellPage::AuditLogs),
                             "Audit Logs"
                         }
+                        button {
+                            class: if page() == ShellPage::Security {
+                                NAV_BUTTON_ACTIVE_CLASS
+                            } else {
+                                NAV_BUTTON_CLASS
+                            },
+                            onclick: move |_| page.set(ShellPage::Security),
+                            "Security"
+                        }
                     }
                 }
                 match page() {
@@ -98,6 +107,7 @@ pub fn App() -> Element {
                     ShellPage::AccessHistory => rsx! { AccessHistoryPage {} },
                     ShellPage::Nodes => rsx! { NodesPage {} },
                     ShellPage::AuditLogs => rsx! { AuditLogPage {} },
+                    ShellPage::Security => rsx! { SecurityPage {} },
                 }
             }
             link {
@@ -126,6 +136,7 @@ enum ShellPage {
     AccessHistory,
     Nodes,
     AuditLogs,
+    Security,
 }
 
 /// First local terminal page.
@@ -305,6 +316,71 @@ pub fn NodesPage() -> Element {
                     dd { class: "m-0 text-terminal-text", "x86_64" }
                     dt { class: "text-terminal-muted", "Remote Terminal" }
                     dd { class: "m-0 text-terminal-muted", "Enter the node id in the terminal toolbar to route through the agent." }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+pub fn SecurityPage() -> Element {
+    rsx! {
+        section {
+            class: "grid gap-4 p-4",
+            div {
+                class: "border border-terminal-border bg-terminal-surface p-4",
+                div {
+                    class: "mb-3 flex items-center justify-between gap-3",
+                    h2 {
+                        class: "m-0 text-sm font-semibold text-terminal-text",
+                        "Passkeys"
+                    }
+                    button {
+                        class: ACTION_BUTTON_CLASS,
+                        "Add passkey"
+                    }
+                }
+                div {
+                    class: "overflow-auto border border-terminal-border",
+                    table {
+                        class: "w-full border-collapse text-sm",
+                        thead {
+                            class: "bg-terminal-bg text-terminal-muted",
+                            tr {
+                                th { class: "p-2 text-left font-medium", "Label" }
+                                th { class: "p-2 text-left font-medium", "Credential" }
+                                th { class: "p-2 text-left font-medium", "Status" }
+                                th { class: "p-2 text-left font-medium", "Actions" }
+                            }
+                        }
+                        tbody {
+                            tr {
+                                td { class: "p-2 text-terminal-text", "Laptop passkey" }
+                                td { class: "p-2 font-mono text-xs text-terminal-muted", "credential-1" }
+                                td { class: "p-2 text-lightning-cyan", "enabled" }
+                                td {
+                                    class: "p-2",
+                                    button { class: ACTION_BUTTON_CLASS, "Disable" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            div {
+                class: "border border-terminal-border bg-terminal-surface p-4",
+                h3 {
+                    class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
+                    "WebAuthn"
+                }
+                dl {
+                    class: "grid grid-cols-[160px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm",
+                    dt { class: "text-terminal-muted", "Backend crate" }
+                    dd { class: "m-0 text-terminal-text", "webauthn-rs" }
+                    dt { class: "text-terminal-muted", "Registration" }
+                    dd { class: "m-0 text-terminal-muted", "Challenge API ready" }
+                    dt { class: "text-terminal-muted", "Authentication" }
+                    dd { class: "m-0 text-terminal-muted", "Challenge API ready" }
                 }
             }
         }

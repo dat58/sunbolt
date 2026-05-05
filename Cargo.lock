@@ -2320,6 +2320,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sunbolt-common",
  "thiserror 2.0.18",
 ]
 

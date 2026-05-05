@@ -9,6 +9,7 @@ version.workspace = true
 rand = { workspace = true }
 serde = { workspace = true }
 sha2 = "0.10"
+sunbolt-common = { path = "../sunbolt-common" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
