@@ -8,6 +8,8 @@ pub const TERMINAL_NODE_INPUT_ID: &str = "sunbolt-terminal-node";
 /// WebSocket endpoint used by the terminal UI.
 pub const TERMINAL_WS_ENDPOINT: &str = "/terminal/ws";
 pub const STEP_UP_MFA_ENDPOINT: &str = "/auth/mfa/step-up";
+pub const XTERM_SCRIPT_URL: &str = "https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.min.js";
+pub const XTERM_STYLESHEET_URL: &str = "https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css";
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
 const STATUS_BASE_CLASS: &str = "inline-flex h-6 items-center rounded-full border px-2.5 text-xs";
@@ -126,11 +128,11 @@ pub fn App() -> Element {
                 href: "/assets/sunbolt.css"
             }
             script {
-                src: "https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.min.js"
+                src: XTERM_SCRIPT_URL
             }
             link {
                 rel: "stylesheet",
-                href: "https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css"
+                href: XTERM_STYLESHEET_URL
             }
             if page() == ShellPage::Terminal {
                 script {
@@ -215,6 +217,8 @@ pub fn TerminalPageBody() -> Element {
                 id: TERMINAL_MOUNT_ID,
                 class: "min-h-0 overflow-hidden p-3 [&_.xterm]:h-full",
                 tabindex: "0",
+                role: "application",
+                "aria-label": "Terminal viewport",
                 "Terminal loading"
             }
         }
@@ -691,7 +695,8 @@ pub fn terminal_bridge_script() -> String {
     connect();
   }};
 
-  if (window.Terminal) {{
+    if (window.Terminal) {{
+    mount.dataset.sunboltTerminalRenderer = "xterm";
     terminal = new window.Terminal({{
       cursorBlink: true,
       convertEol: true,
@@ -704,8 +709,11 @@ pub fn terminal_bridge_script() -> String {
       }}
     }});
     terminal.open(mount);
+    terminal.focus();
+    mount.addEventListener("click", () => terminal.focus());
     terminal.onData(sendInput);
   }} else {{
+    mount.dataset.sunboltTerminalRenderer = "textarea";
     mount.innerHTML = "";
     fallbackOutput = document.createElement("pre");
     fallbackOutput.className = "{fallback_output_class}";
@@ -765,7 +773,7 @@ pub fn terminal_bridge_script() -> String {
 mod tests {
     use super::{
         app_title, terminal_bridge_script, STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID,
-        TERMINAL_NODE_INPUT_ID, TERMINAL_WS_ENDPOINT,
+        TERMINAL_NODE_INPUT_ID, TERMINAL_WS_ENDPOINT, XTERM_SCRIPT_URL, XTERM_STYLESHEET_URL,
     };
 
     #[test]
@@ -789,5 +797,18 @@ mod tests {
         assert!(script.contains("sunbolt-terminal-mfa"));
         assert!(script.contains("sunbolt-terminal-reconnect"));
         assert!(script.contains("border-lightning-cyan"));
+    }
+
+    #[test]
+    fn terminal_bridge_uses_xterm_renderer() {
+        let script = terminal_bridge_script();
+
+        assert!(XTERM_SCRIPT_URL.contains("xterm@5.5.0"));
+        assert!(XTERM_STYLESHEET_URL.contains("xterm@5.5.0"));
+        assert!(script.contains("window.Terminal"));
+        assert!(script.contains("terminal.open(mount)"));
+        assert!(script.contains("terminal.write(data)"));
+        assert!(script.contains("terminal.focus()"));
+        assert!(script.contains("sunboltTerminalRenderer"));
     }
 }

@@ -381,11 +381,11 @@ The phase is complete only when a user can open the browser UI and interact with
 
 ## Browser Terminal Renderer
 
-- [ ] Integrate a real browser terminal renderer such as `xterm.js`, or document and implement the chosen equivalent.
-- [ ] Add required JavaScript bridge code if Dioxus needs it.
-- [ ] Render terminal output using the terminal renderer, not a fake static text block.
-- [ ] Support common ANSI output from shell commands.
-- [ ] Ensure the terminal viewport can receive focus and keyboard input.
+- [x] Integrate a real browser terminal renderer such as `xterm.js`, or document and implement the chosen equivalent.
+- [x] Add required JavaScript bridge code if Dioxus needs it.
+- [x] Render terminal output using the terminal renderer, not a fake static text block.
+- [x] Support common ANSI output from shell commands.
+- [x] Ensure the terminal viewport can receive focus and keyboard input.
 
 ## WebSocket Client
 
