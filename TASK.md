@@ -347,11 +347,11 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Mesh Research
 
-- [ ] Evaluate QUIC transport.
-- [ ] Evaluate WireGuard overlay option.
-- [ ] Evaluate node-to-node relay mode.
-- [ ] Define trust model for node-to-node communication.
-- [ ] Define audit implications of relay routing.
+- [x] Evaluate QUIC transport.
+- [x] Evaluate WireGuard overlay option.
+- [x] Evaluate node-to-node relay mode.
+- [x] Define trust model for node-to-node communication.
+- [x] Define audit implications of relay routing.
 
 ## Control Plane HA
 

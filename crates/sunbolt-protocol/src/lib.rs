@@ -1,3 +1,5 @@
+pub mod mesh;
+
 use serde::{Deserialize, Serialize};
 
 /// Initial protocol version for future control-plane and agent messages.
