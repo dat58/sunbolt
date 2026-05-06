@@ -402,16 +402,16 @@ The phase is complete only when a user can open the browser UI and interact with
 
 ## Terminal Input/Output
 
-- [ ] Send keyboard input from the browser terminal to the backend.
-- [ ] Receive PTY output from the backend.
-- [ ] Render PTY output in the browser terminal viewport.
-- [ ] Verify interactive commands work, for example:
-  - [ ] `pwd`
-  - [ ] `ls`
-  - [ ] `echo hello`
-  - [ ] `clear`
-  - [ ] `Ctrl+C` where practical
-- [ ] Ensure binary/control bytes are handled safely enough for MVP.
+- [x] Send keyboard input from the browser terminal to the backend.
+- [x] Receive PTY output from the backend.
+- [x] Render PTY output in the browser terminal viewport.
+- [x] Verify interactive commands work, for example:
+  - [x] `pwd`
+  - [x] `ls`
+  - [x] `echo hello`
+  - [x] `clear`
+  - [x] `Ctrl+C` where practical
+- [x] Ensure binary/control bytes are handled safely enough for MVP.
 
 ## Resize and Cleanup
 

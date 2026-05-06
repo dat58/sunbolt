@@ -563,6 +563,13 @@ pub fn terminal_bridge_script() -> String {
   let fallbackInput = null;
   let fallbackOutput = null;
 
+  const terminalData = (data) => {{
+    if (typeof data !== "string") {{
+      return "";
+    }}
+    return data.replace(/\u0000/g, "");
+  }};
+
   const setError = (message) => {{
     if (!errorDisplay) {{
       return;
@@ -598,12 +605,13 @@ pub fn terminal_bridge_script() -> String {
   }};
 
   const writeOutput = (data) => {{
+    const safeData = terminalData(data);
     if (terminal) {{
-      terminal.write(data);
+      terminal.write(safeData);
       return;
     }}
     if (fallbackOutput) {{
-      fallbackOutput.textContent += data;
+      fallbackOutput.textContent += safeData;
       fallbackOutput.scrollTop = fallbackOutput.scrollHeight;
     }}
   }};
@@ -709,7 +717,7 @@ pub fn terminal_bridge_script() -> String {
     if (!sessionId) {{
       return;
     }}
-    send({{ type: "input", session_id: sessionId, data }});
+    send({{ type: "input", session_id: sessionId, data: terminalData(data) }});
   }};
 
   const closeTerminal = () => {{
@@ -858,7 +866,7 @@ mod tests {
         assert!(XTERM_STYLESHEET_URL.contains("xterm@5.5.0"));
         assert!(script.contains("window.Terminal"));
         assert!(script.contains("terminal.open(mount)"));
-        assert!(script.contains("terminal.write(data)"));
+        assert!(script.contains("terminal.write(safeData)"));
         assert!(script.contains("terminal.focus()"));
         assert!(script.contains("sunboltTerminalRenderer"));
     }
@@ -877,5 +885,16 @@ mod tests {
         assert!(script.contains(r#"setStatus("Error", "error")"#));
         assert!(script.contains("sunbolt-terminal-error"));
         assert!(script.contains("sunbolt-terminal-retry"));
+    }
+
+    #[test]
+    fn terminal_bridge_sanitizes_terminal_data_without_blocking_control_input() {
+        let script = terminal_bridge_script();
+
+        assert!(script.contains("terminalData"));
+        assert!(script.contains(r#"replace(/\u0000/g, "")"#));
+        assert!(script.contains("terminal.onData(sendInput)"));
+        assert!(script.contains(r#"type: "input""#));
+        assert!(script.contains("writeOutput(message.data)"));
     }
 }
