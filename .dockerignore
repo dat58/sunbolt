@@ -1,0 +1,8 @@
+target/
+.git/
+.env
+.env.*
+!.env.example
+crates/sunbolt-ui/node_modules/
+crates/sunbolt-ui/dist/
+crates/sunbolt-ui/.dioxus/

@@ -69,6 +69,7 @@ static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// WebSocket path for browser terminal connections.
 pub const TERMINAL_WS_PATH: &str = "/terminal/ws";
+pub const HEALTH_PATH: &str = "/health";
 pub const AUTH_LOGIN_PATH: &str = "/auth/login";
 pub const AUTH_LOGOUT_PATH: &str = "/auth/logout";
 pub const AUTH_ME_PATH: &str = "/auth/me";
@@ -101,6 +102,7 @@ fn build_router(state: AppState) -> Router {
     let origin_layer = from_fn_with_state(state.allowed_origins.clone(), require_origin_middleware);
 
     Router::new()
+        .route(HEALTH_PATH, get(health))
         .route(TERMINAL_WS_PATH, get(terminal_websocket))
         .route(
             AUTH_LOGIN_PATH,
@@ -141,6 +143,19 @@ fn build_router(state: AppState) -> Router {
         .route(AGENT_HEARTBEAT_PATH, post(agent_heartbeat))
         .layer(from_fn(security_headers_middleware))
         .with_state(state)
+}
+
+async fn health() -> impl IntoResponse {
+    Json(HealthResponse {
+        status: "ok",
+        component: "sunbolt-control",
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    component: &'static str,
 }
 
 #[derive(Clone)]
@@ -2565,7 +2580,7 @@ mod tests {
         TerminalAuthorizationError, TerminalSessionConfig, TerminalSessionRegistry,
         ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
         AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
-        ENROLLMENT_TOKENS_PATH, NODES_PATH, SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
+        ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH, SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
@@ -3624,6 +3639,28 @@ mod tests {
             .to_str()
             .expect("CSP header should be utf-8")
             .contains("default-src 'self'"));
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_reports_ready() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(HEALTH_PATH)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["component"], "sunbolt-control");
     }
 
     #[tokio::test]

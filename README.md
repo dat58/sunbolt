@@ -27,3 +27,7 @@ cargo fmt
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+## Deployment
+
+Production deployment notes, container build instructions, reverse proxy guidance, migration commands, and backup/restore notes live in [docs/deployment.md](docs/deployment.md).

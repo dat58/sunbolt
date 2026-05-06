@@ -327,12 +327,12 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Production Readiness
 
-- [ ] Add Dockerfile.
-- [ ] Add production config example.
-- [ ] Add reverse proxy example.
-- [ ] Add HTTPS deployment note.
-- [ ] Add database migration command docs.
-- [ ] Add backup/restore notes.
+- [x] Add Dockerfile.
+- [x] Add production config example.
+- [x] Add reverse proxy example.
+- [x] Add HTTPS deployment note.
+- [x] Add database migration command docs.
+- [x] Add backup/restore notes.
 
 ---
 
