@@ -6,7 +6,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-dioxus = { workspace = true, features = ["web"] }
+dioxus = { workspace = true, features = ["asset", "web"] }
 sunbolt-common = { path = "../sunbolt-common" }
 sunbolt-protocol = { path = "../sunbolt-protocol" }
 

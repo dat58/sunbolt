@@ -126,7 +126,7 @@ pub fn App() -> Element {
             }
             link {
                 rel: "stylesheet",
-                href: "/assets/sunbolt.css"
+                href: asset!("/assets/sunbolt.css")
             }
             script {
                 src: XTERM_SCRIPT_URL
