@@ -199,6 +199,45 @@ mod tests {
     }
 
     #[test]
+    fn serializes_interactive_client_messages() {
+        let input = serde_json::to_value(TerminalClientMessage::Input {
+            session_id: TerminalSessionId("session-1".to_owned()),
+            data: "\u{3}clear\n".to_owned(),
+        })
+        .expect("input message should serialize");
+
+        assert_eq!(
+            input,
+            json!({
+                "type": "input",
+                "session_id": "session-1",
+                "data": "\u{3}clear\n"
+            })
+        );
+
+        let resize = serde_json::to_value(TerminalClientMessage::Resize {
+            session_id: TerminalSessionId("session-1".to_owned()),
+            size: TerminalSize {
+                cols: 132,
+                rows: 43,
+            },
+        })
+        .expect("resize message should serialize");
+
+        assert_eq!(
+            resize,
+            json!({
+                "type": "resize",
+                "session_id": "session-1",
+                "size": {
+                    "cols": 132,
+                    "rows": 43
+                }
+            })
+        );
+    }
+
+    #[test]
     fn deserializes_client_messages() {
         let input: TerminalClientMessage = serde_json::from_value(json!({
             "type": "input",
@@ -418,6 +457,19 @@ mod tests {
                 nonce: "nonce-1".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn terminal_messages_reject_unknown_fields() {
+        let error = serde_json::from_value::<TerminalClientMessage>(json!({
+            "type": "input",
+            "session_id": "session-1",
+            "data": "pwd\n",
+            "extra": true
+        }))
+        .expect_err("unknown client fields should be rejected");
+
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]

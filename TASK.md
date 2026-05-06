@@ -432,8 +432,8 @@ The phase is complete only when a user can open the browser UI and interact with
 
 ## Tests and Validation
 
-- [ ] Add UI/component tests where practical.
-- [ ] Add protocol serialization tests if missing.
+- [x] Add UI/component tests where practical.
+- [x] Add protocol serialization tests if missing.
 
 
 # Bug / Issue Backlog
