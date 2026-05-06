@@ -340,10 +340,10 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Routing
 
-- [ ] Add `NodeRouter` abstraction.
-- [ ] Add route selection for direct agent connection.
-- [ ] Add route selection for relay node.
-- [ ] Track route health.
+- [x] Add `NodeRouter` abstraction.
+- [x] Add route selection for direct agent connection.
+- [x] Add route selection for relay node.
+- [x] Track route health.
 
 ## Mesh Research
 

@@ -1,4 +1,5 @@
 mod rate_limit;
+mod routing;
 mod security;
 
 use std::{
@@ -29,6 +30,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
+use routing::{InMemoryNodeRouter, NodeRoute, NodeRouter, RouteRequest};
 use serde::{Deserialize, Serialize};
 use sunbolt_audit::{AuditEvent, AuditEventInput, AuditEventKind, AuditLog};
 use sunbolt_auth::{AuthError, AuthService, FactorType, User, SESSION_COOKIE_NAME};
@@ -168,6 +170,7 @@ struct AppState {
     audit: AuditLog,
     node_enrollment: NodeEnrollmentRegistry,
     agent_connections: AgentConnectionRegistry,
+    node_router: InMemoryNodeRouter,
     login_rate_limiter: SlidingWindowRateLimiter,
     terminal_rate_limiter: SlidingWindowRateLimiter,
     allowed_origins: Vec<String>,
@@ -187,6 +190,7 @@ impl AppState {
             audit: AuditLog::default(),
             node_enrollment: NodeEnrollmentRegistry::default(),
             agent_connections: AgentConnectionRegistry::default(),
+            node_router: InMemoryNodeRouter::default(),
             login_rate_limiter: SlidingWindowRateLimiter::new(
                 DEFAULT_LOGIN_RATE_WINDOW,
                 DEFAULT_LOGIN_RATE_MAX,
@@ -652,6 +656,17 @@ impl AgentConnectionRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(node_id);
+    }
+
+    fn connected_node_ids_except(&self, node_id: &str) -> Vec<NodeId> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .filter(|candidate| candidate.as_str() != node_id)
+            .cloned()
+            .map(NodeId)
+            .collect()
     }
 
     #[cfg(test)]
@@ -1964,7 +1979,57 @@ async fn handle_remote_terminal_socket(
         return;
     }
 
+    let Ok(route) = state.node_router.select_route(RouteRequest {
+        target_node_id: node_id.clone(),
+        direct_agent_connected: state.agent_connections.connection(&node_id_text).is_some(),
+        relay_candidates: state
+            .agent_connections
+            .connected_node_ids_except(&node_id_text),
+    }) else {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalFailed,
+            actor_email: Some(actor_email),
+            message: format!("remote terminal requested without healthy route {node_id_text}"),
+        });
+        let _ = send_server_message(
+            &mut socket,
+            TerminalServerMessage::Error {
+                session_id: Some(session_id),
+                error: protocol_error_text(
+                    TerminalErrorCode::TerminalUnavailable,
+                    "no healthy route is available for the agent node",
+                ),
+            },
+        )
+        .await;
+        return;
+    };
+
+    let NodeRoute::DirectAgent { .. } = &route else {
+        state.node_router.record_failure(&route);
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalFailed,
+            actor_email: Some(actor_email),
+            message: format!(
+                "relay route selected for {node_id_text}, but relay execution is not enabled"
+            ),
+        });
+        let _ = send_server_message(
+            &mut socket,
+            TerminalServerMessage::Error {
+                session_id: Some(session_id),
+                error: protocol_error_text(
+                    TerminalErrorCode::TerminalUnavailable,
+                    "relay routing is selected but not enabled for terminal streams",
+                ),
+            },
+        )
+        .await;
+        return;
+    };
+
     let Some(connection) = state.agent_connections.connection(&node_id_text) else {
+        state.node_router.record_failure(&route);
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
             actor_email: Some(actor_email),
@@ -1994,6 +2059,7 @@ async fn handle_remote_terminal_socket(
         .is_err()
     {
         state.agent_connections.disconnect(&node_id_text);
+        state.node_router.record_failure(&route);
         let _ = send_server_message(
             &mut socket,
             TerminalServerMessage::Error {
@@ -2007,6 +2073,8 @@ async fn handle_remote_terminal_socket(
         .await;
         return;
     }
+
+    state.node_router.record_success(&route);
 
     let (mut sender, mut receiver) = socket.split();
     let mut event_rx = connection.event_rx.lock().await;
@@ -2578,7 +2646,7 @@ mod tests {
     use super::{
         authorize_terminal_request, build_router, component_name, exit_message,
         parse_client_message, terminal_size_from_protocol, AgentConnectionRegistry, AppState,
-        NodeEnrollmentRegistry, SessionLimitError, SlidingWindowRateLimiter,
+        InMemoryNodeRouter, NodeEnrollmentRegistry, SessionLimitError, SlidingWindowRateLimiter,
         TerminalAuthorizationError, TerminalSessionConfig, TerminalSessionRegistry,
         ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
         AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
@@ -3491,6 +3559,7 @@ mod tests {
             audit: sunbolt_audit::AuditLog::default(),
             node_enrollment: NodeEnrollmentRegistry::default(),
             agent_connections: AgentConnectionRegistry::default(),
+            node_router: InMemoryNodeRouter::default(),
             login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
             terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
             allowed_origins: vec![],
@@ -3675,6 +3744,7 @@ mod tests {
             audit: sunbolt_audit::AuditLog::default(),
             node_enrollment: NodeEnrollmentRegistry::default(),
             agent_connections: AgentConnectionRegistry::default(),
+            node_router: InMemoryNodeRouter::default(),
             login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 2),
             terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
             allowed_origins: vec![],
@@ -3723,6 +3793,7 @@ mod tests {
             audit: sunbolt_audit::AuditLog::default(),
             node_enrollment: NodeEnrollmentRegistry::default(),
             agent_connections: AgentConnectionRegistry::default(),
+            node_router: InMemoryNodeRouter::default(),
             login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
             terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
             allowed_origins: vec!["http://localhost:3000".to_owned()],
@@ -3757,6 +3828,7 @@ mod tests {
             audit: sunbolt_audit::AuditLog::default(),
             node_enrollment: NodeEnrollmentRegistry::default(),
             agent_connections: AgentConnectionRegistry::default(),
+            node_router: InMemoryNodeRouter::default(),
             login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
             terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
             allowed_origins: vec!["http://localhost:3000".to_owned()],
