@@ -415,11 +415,11 @@ The phase is complete only when a user can open the browser UI and interact with
 
 ## Resize and Cleanup
 
-- [ ] Send resize messages from browser to backend where practical.
-- [ ] Resize terminal viewport when browser/container size changes.
-- [ ] Close WebSocket on component unmount or page leave.
-- [ ] Ensure backend terminal session is closed or safely detached on UI disconnect.
-- [ ] Add reconnect button even if full session reattach is not implemented yet.
+- [x] Send resize messages from browser to backend where practical.
+- [x] Resize terminal viewport when browser/container size changes.
+- [x] Close WebSocket on component unmount or page leave.
+- [x] Ensure backend terminal session is closed or safely detached on UI disconnect.
+- [x] Add reconnect button even if full session reattach is not implemented yet.
 
 ## Local Development Documentation
 

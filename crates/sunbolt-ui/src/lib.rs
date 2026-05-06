@@ -562,6 +562,9 @@ pub fn terminal_bridge_script() -> String {
   let terminal = null;
   let fallbackInput = null;
   let fallbackOutput = null;
+  let resizeObserver = null;
+  let mountObserver = null;
+  let cleanedUp = false;
 
   const terminalData = (data) => {{
     if (typeof data !== "string") {{
@@ -731,6 +734,27 @@ pub fn terminal_bridge_script() -> String {
     setStatus("Closed", "closed");
   }};
 
+  const cleanupTerminal = () => {{
+    if (cleanedUp) {{
+      return;
+    }}
+    cleanedUp = true;
+    if (sessionId && reconnectToken) {{
+      send({{ type: "detach", session_id: sessionId }});
+    }} else if (sessionId) {{
+      send({{ type: "close", session_id: sessionId }});
+    }}
+    if (socket) {{
+      socket.close();
+    }}
+    if (resizeObserver) {{
+      resizeObserver.disconnect();
+    }}
+    if (mountObserver) {{
+      mountObserver.disconnect();
+    }}
+  }};
+
   const completeStepUpMfa = async () => {{
     setStatus("MFA", "connecting");
     const response = await fetch("{step_up_mfa_endpoint}", {{
@@ -779,8 +803,14 @@ pub fn terminal_bridge_script() -> String {
     fallbackInput.focus();
   }}
 
-  const observer = new ResizeObserver(resize);
-  observer.observe(mount);
+  resizeObserver = new ResizeObserver(resize);
+  resizeObserver.observe(mount);
+  mountObserver = new MutationObserver(() => {{
+    if (!document.body.contains(mount)) {{
+      cleanupTerminal();
+    }}
+  }});
+  mountObserver.observe(document.body, {{ childList: true, subtree: true }});
   if (closeButton) {{
     closeButton.addEventListener("click", closeTerminal);
   }}
@@ -801,11 +831,8 @@ pub fn terminal_bridge_script() -> String {
       connect();
     }});
   }}
-  window.addEventListener("beforeunload", () => {{
-    if (sessionId && reconnectToken) {{
-      send({{ type: "detach", session_id: sessionId }});
-    }}
-  }});
+  window.addEventListener("beforeunload", cleanupTerminal);
+  window.addEventListener("pagehide", cleanupTerminal);
   setStatus("Idle", "idle");
   connect();
 }})();
@@ -896,5 +923,19 @@ mod tests {
         assert!(script.contains("terminal.onData(sendInput)"));
         assert!(script.contains(r#"type: "input""#));
         assert!(script.contains("writeOutput(message.data)"));
+    }
+
+    #[test]
+    fn terminal_bridge_handles_resize_and_cleanup() {
+        let script = terminal_bridge_script();
+
+        assert!(script.contains("new ResizeObserver(resize)"));
+        assert!(script.contains(r#"type: "resize""#));
+        assert!(script.contains("new MutationObserver"));
+        assert!(script.contains("cleanupTerminal"));
+        assert!(script.contains(r#"type: "detach""#));
+        assert!(script.contains(r#"type: "close""#));
+        assert!(script.contains("pagehide"));
+        assert!(script.contains("beforeunload"));
     }
 }
