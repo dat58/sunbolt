@@ -423,12 +423,12 @@ The phase is complete only when a user can open the browser UI and interact with
 
 ## Local Development Documentation
 
-- [ ] Document how to run the control-plane backend.
-- [ ] Document how to run the Dioxus UI.
-- [ ] Document expected local ports.
-- [ ] Document required environment variables.
-- [ ] Document terminal WebSocket route.
-- [ ] Document known MVP limitations.
+- [x] Document how to run the control-plane backend.
+- [x] Document how to run the Dioxus UI.
+- [x] Document expected local ports.
+- [x] Document required environment variables.
+- [x] Document terminal WebSocket route.
+- [x] Document known MVP limitations.
 
 ## Tests and Validation
 
