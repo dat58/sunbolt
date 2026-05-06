@@ -1,3 +1,5 @@
+pub mod ha;
+
 mod rate_limit;
 mod routing;
 mod security;

@@ -355,10 +355,10 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Control Plane HA
 
-- [ ] Identify state that must be shared.
-- [ ] Evaluate Redis/NATS/Postgres notification channel for active session routing.
-- [ ] Design multi-control-plane agent connection strategy.
-- [ ] Design sticky routing for active WebSocket sessions.
+- [x] Identify state that must be shared.
+- [x] Evaluate Redis/NATS/Postgres notification channel for active session routing.
+- [x] Design multi-control-plane agent connection strategy.
+- [x] Design sticky routing for active WebSocket sessions.
 
 ---
 
