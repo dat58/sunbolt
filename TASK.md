@@ -59,12 +59,12 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ## Backend Skeleton
 
-- [ ] Add Axum backend binary or library entrypoint.
-- [ ] Add Tokio runtime.
-- [ ] Add `/health` endpoint.
-- [ ] Add structured error type.
-- [ ] Add request tracing/logging.
-- [ ] Add config loading from environment variables.
+- [x] Add Axum backend binary or library entrypoint.
+- [x] Add Tokio runtime.
+- [x] Add `/health` endpoint.
+- [x] Add structured error type.
+- [x] Add request tracing/logging.
+- [x] Add config loading from environment variables.
 
 ## UI Skeleton
 

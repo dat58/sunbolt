@@ -12,6 +12,8 @@ sunbolt-protocol = { path = "../sunbolt-protocol" }
 sunbolt-terminal = { path = "../sunbolt-terminal" }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [lib]
 path = "src/lib.rs"

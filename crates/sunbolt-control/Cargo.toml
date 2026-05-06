@@ -16,7 +16,11 @@ sunbolt-auth = { path = "../sunbolt-auth" }
 sunbolt-common = { path = "../sunbolt-common" }
 sunbolt-protocol = { path = "../sunbolt-protocol" }
 sunbolt-terminal = { path = "../sunbolt-terminal" }
+thiserror = { workspace = true }
 tokio = { workspace = true }
+tower-http = { workspace = true, features = ["trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

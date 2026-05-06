@@ -45,6 +45,7 @@ use tokio::{
     sync::{broadcast, mpsc, Mutex as AsyncMutex},
     task,
 };
+use tower_http::trace::TraceLayer;
 
 use rate_limit::SlidingWindowRateLimiter;
 
@@ -142,6 +143,7 @@ fn build_router(state: AppState) -> Router {
         .route(AGENT_ENROLL_PATH, post(agent_enroll))
         .route(AGENT_HEARTBEAT_PATH, post(agent_heartbeat))
         .layer(from_fn(security_headers_middleware))
+        .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
