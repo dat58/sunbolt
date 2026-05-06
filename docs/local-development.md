@@ -51,6 +51,10 @@ The terminal bridge defaults to the current browser host plus `/terminal/ws`. If
 </script>
 ```
 
+## Local Agent
+
+To enroll and heartbeat a local `sunbolt-agent` process against the control plane, follow [Agent Connection](agent-connection.md).
+
 ## Environment Variables
 
 Common local control-plane variables:

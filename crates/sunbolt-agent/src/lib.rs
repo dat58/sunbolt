@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, future::Future};
+use std::{collections::HashMap, env, future::Future, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use sunbolt_protocol::{
@@ -9,9 +9,12 @@ use sunbolt_terminal::{
     LocalPtySession, TerminalError as PtyTerminalError, TerminalExitStatus, TerminalSize,
 };
 use thiserror::Error;
+use tokio::time;
+use tracing::info;
 
 const DEFAULT_CONTROL_PLANE_URL: &str = "http://127.0.0.1:3000";
 const DEFAULT_NODE_NAME: &str = "local-agent";
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Returns a stable name for the agent component.
 #[must_use]
@@ -395,14 +398,70 @@ impl AgentRuntime {
     ///
     /// # Errors
     ///
-    /// The initial Phase 3 runtime has no fallible background work. This
-    /// method returns a `Result` so later connection and heartbeat loops can
-    /// surface structured errors without changing the public runtime shape.
+    /// Returns an error when enrollment or a heartbeat request to the control
+    /// plane fails.
     pub async fn run_until_shutdown<S>(&self, shutdown: S) -> Result<(), AgentError>
     where
         S: Future<Output = ()>,
     {
-        shutdown.await;
+        let client = reqwest::Client::new();
+        let enrollment = self.enroll(&client).await?;
+        info!(
+            node_id = %enrollment.node_id,
+            "agent enrolled with control plane"
+        );
+
+        let connection = AgentConnection::new(&self.config, &enrollment, &self.node_info);
+        self.send_heartbeat(&client, &connection).await?;
+        info!(
+            node_id = %connection.heartbeat_message().node_id,
+            "agent heartbeat accepted"
+        );
+
+        let mut heartbeat_interval = time::interval(HEARTBEAT_INTERVAL);
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                () = &mut shutdown => break,
+                _ = heartbeat_interval.tick() => {
+                    self.send_heartbeat(&client, &connection).await?;
+                    info!(
+                        node_id = %connection.heartbeat_message().node_id,
+                        "agent heartbeat accepted"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn enroll(&self, client: &reqwest::Client) -> Result<AgentEnrollmentResponse, AgentError> {
+        let request = AgentEnrollmentRequest::from_config(&self.config, &self.node_info)?;
+        let response = client
+            .post(join_url_path(
+                &self.config.control_plane_url,
+                AgentEnrollmentRequest::endpoint_path(),
+            ))
+            .json(&request)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        Ok(response.json::<AgentEnrollmentResponse>().await?)
+    }
+
+    async fn send_heartbeat(
+        &self,
+        client: &reqwest::Client,
+        connection: &AgentConnection,
+    ) -> Result<(), AgentError> {
+        client
+            .post(connection.heartbeat_endpoint())
+            .json(connection.heartbeat_message())
+            .send()
+            .await?
+            .error_for_status()?;
+
         Ok(())
     }
 }
@@ -411,6 +470,8 @@ impl AgentRuntime {
 pub enum AgentError {
     #[error("agent enrollment token is not configured")]
     MissingEnrollmentToken,
+    #[error("agent control-plane request failed: {0}")]
+    ControlPlaneRequest(#[from] reqwest::Error),
     #[error("terminal session {0} already exists")]
     TerminalSessionExists(String),
     #[error("terminal session {0} does not exist")]
@@ -649,7 +710,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_stops_on_shutdown_signal() {
+    async fn runtime_requires_enrollment_token() {
         let runtime = AgentRuntime::new(
             AgentConfig {
                 control_plane_url: "https://control.example.test".to_owned(),
@@ -666,11 +727,16 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         tx.send(()).expect("shutdown signal should send");
 
-        runtime
+        let error = runtime
             .run_until_shutdown(async {
                 let _ = rx.await;
             })
             .await
-            .expect("runtime should stop cleanly");
+            .expect_err("missing enrollment token should stop startup");
+
+        assert_eq!(
+            error.to_string(),
+            "agent enrollment token is not configured"
+        );
     }
 }
