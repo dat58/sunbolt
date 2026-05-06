@@ -362,6 +362,80 @@ A user can open a browser, log in locally or through a temporary dev auth flow, 
 
 ---
 
+# Phase 7 — Web UI Terminal Integration
+
+Goal: connect the Dioxus web UI to the existing control-plane terminal backend.
+The phase is complete only when a user can open the browser UI and interact with a real local shell through Sunbolt.
+
+## UI Route and Layout
+
+- [x] Add a Terminal page or route in the Dioxus web UI.
+- [x] Add a visible navigation entry or button to open the Terminal page.
+- [x] Add terminal page layout with:
+  - [x] page title
+  - [x] connection status
+  - [x] terminal viewport
+  - [x] reconnect or retry action
+  - [x] error display
+- [x] Apply Sunbolt visual direction using sunlight/lightning accents and dark terminal-friendly surfaces.
+
+## Browser Terminal Renderer
+
+- [ ] Integrate a real browser terminal renderer such as `xterm.js`, or document and implement the chosen equivalent.
+- [ ] Add required JavaScript bridge code if Dioxus needs it.
+- [ ] Render terminal output using the terminal renderer, not a fake static text block.
+- [ ] Support common ANSI output from shell commands.
+- [ ] Ensure the terminal viewport can receive focus and keyboard input.
+
+## WebSocket Client
+
+- [ ] Add UI-side WebSocket connection logic.
+- [ ] Make the WebSocket URL configurable for local development.
+- [ ] Connect to the existing control-plane terminal WebSocket route.
+- [ ] Display connection states:
+  - [ ] idle
+  - [ ] connecting
+  - [ ] connected
+  - [ ] disconnected
+  - [ ] error
+- [ ] Show useful error messages when connection fails.
+
+## Terminal Input/Output
+
+- [ ] Send keyboard input from the browser terminal to the backend.
+- [ ] Receive PTY output from the backend.
+- [ ] Render PTY output in the browser terminal viewport.
+- [ ] Verify interactive commands work, for example:
+  - [ ] `pwd`
+  - [ ] `ls`
+  - [ ] `echo hello`
+  - [ ] `clear`
+  - [ ] `Ctrl+C` where practical
+- [ ] Ensure binary/control bytes are handled safely enough for MVP.
+
+## Resize and Cleanup
+
+- [ ] Send resize messages from browser to backend where practical.
+- [ ] Resize terminal viewport when browser/container size changes.
+- [ ] Close WebSocket on component unmount or page leave.
+- [ ] Ensure backend terminal session is closed or safely detached on UI disconnect.
+- [ ] Add reconnect button even if full session reattach is not implemented yet.
+
+## Local Development Documentation
+
+- [ ] Document how to run the control-plane backend.
+- [ ] Document how to run the Dioxus UI.
+- [ ] Document expected local ports.
+- [ ] Document required environment variables.
+- [ ] Document terminal WebSocket route.
+- [ ] Document known MVP limitations.
+
+## Tests and Validation
+
+- [ ] Add UI/component tests where practical.
+- [ ] Add protocol serialization tests if missing.
+
+
 # Bug / Issue Backlog
 
 Add bugs here as they are discovered.

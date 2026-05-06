@@ -156,9 +156,20 @@ enum ShellPage {
 pub fn TerminalPageBody() -> Element {
     rsx! {
         section {
-            class: "grid min-h-0 grid-rows-[48px_minmax(0,1fr)]",
+            class: "grid min-h-0 grid-rows-[64px_32px_minmax(0,1fr)]",
             div {
-                class: "flex items-center justify-end border-b border-terminal-border bg-terminal-surface px-4",
+                class: "flex items-center justify-between border-b border-terminal-border bg-terminal-surface px-4",
+                div {
+                    class: "min-w-0",
+                    h2 {
+                        class: "m-0 text-sm font-semibold text-terminal-text",
+                        "Terminal"
+                    }
+                    p {
+                        class: "m-0 text-xs text-terminal-muted",
+                        "Local shell"
+                    }
+                }
                 div {
                     class: "flex items-center gap-2",
                     input {
@@ -184,11 +195,21 @@ pub fn TerminalPageBody() -> Element {
                         "Reconnect"
                     }
                     button {
+                        id: "sunbolt-terminal-retry",
+                        class: ACTION_BUTTON_CLASS,
+                        "Retry"
+                    }
+                    button {
                         id: "sunbolt-terminal-close",
                         class: ACTION_BUTTON_CLASS,
                         "Close"
                     }
                 }
+            }
+            div {
+                id: "sunbolt-terminal-error",
+                class: "hidden items-center border-b border-terminal-border bg-terminal-bg px-4 text-xs text-warm-orange",
+                role: "status"
             }
             div {
                 id: TERMINAL_MOUNT_ID,
