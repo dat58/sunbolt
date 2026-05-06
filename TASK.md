@@ -389,16 +389,16 @@ The phase is complete only when a user can open the browser UI and interact with
 
 ## WebSocket Client
 
-- [ ] Add UI-side WebSocket connection logic.
-- [ ] Make the WebSocket URL configurable for local development.
-- [ ] Connect to the existing control-plane terminal WebSocket route.
-- [ ] Display connection states:
-  - [ ] idle
-  - [ ] connecting
-  - [ ] connected
-  - [ ] disconnected
-  - [ ] error
-- [ ] Show useful error messages when connection fails.
+- [x] Add UI-side WebSocket connection logic.
+- [x] Make the WebSocket URL configurable for local development.
+- [x] Connect to the existing control-plane terminal WebSocket route.
+- [x] Display connection states:
+  - [x] idle
+  - [x] connecting
+  - [x] connected
+  - [x] disconnected
+  - [x] error
+- [x] Show useful error messages when connection fails.
 
 ## Terminal Input/Output
 

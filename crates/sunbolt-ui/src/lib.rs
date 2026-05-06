@@ -8,6 +8,7 @@ pub const TERMINAL_NODE_INPUT_ID: &str = "sunbolt-terminal-node";
 /// WebSocket endpoint used by the terminal UI.
 pub const TERMINAL_WS_ENDPOINT: &str = "/terminal/ws";
 pub const STEP_UP_MFA_ENDPOINT: &str = "/auth/mfa/step-up";
+pub const TERMINAL_WS_CONFIG_GLOBAL: &str = "SUNBOLT_TERMINAL_WS_URL";
 pub const XTERM_SCRIPT_URL: &str = "https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.min.js";
 pub const XTERM_STYLESHEET_URL: &str = "https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css";
 
@@ -219,6 +220,7 @@ pub fn TerminalPageBody() -> Element {
                 tabindex: "0",
                 role: "application",
                 "aria-label": "Terminal viewport",
+                "data-ws-endpoint": TERMINAL_WS_ENDPOINT,
                 "Terminal loading"
             }
         }
@@ -541,9 +543,11 @@ pub fn terminal_bridge_script() -> String {
 (() => {{
   const mount = document.getElementById("{mount_id}");
   const status = document.getElementById("sunbolt-terminal-status");
+  const errorDisplay = document.getElementById("sunbolt-terminal-error");
   const closeButton = document.getElementById("sunbolt-terminal-close");
   const mfaButton = document.getElementById("sunbolt-terminal-mfa");
   const reconnectButton = document.getElementById("sunbolt-terminal-reconnect");
+  const retryButton = document.getElementById("sunbolt-terminal-retry");
   const nodeInput = document.getElementById("{node_input_id}");
   if (!mount || mount.dataset.sunboltTerminalReady === "true") {{
     return;
@@ -559,23 +563,37 @@ pub fn terminal_bridge_script() -> String {
   let fallbackInput = null;
   let fallbackOutput = null;
 
+  const setError = (message) => {{
+    if (!errorDisplay) {{
+      return;
+    }}
+    errorDisplay.textContent = message || "";
+    errorDisplay.classList.toggle("hidden", !message);
+    errorDisplay.classList.toggle("flex", Boolean(message));
+  }};
+
   const setStatus = (label, state) => {{
     if (!status) {{
       return;
     }}
     status.textContent = label;
     const classes = {{
+      idle: "{status_closed_class}",
       connecting: "{status_connecting_class}",
       connected: "{status_connected_class}",
       error: "{status_error_class}",
+      disconnected: "{status_closed_class}",
       closed: "{status_closed_class}"
     }};
     status.className = classes[state] || "{status_base_class}";
     if (closeButton) {{
-      closeButton.disabled = state === "closed";
+      closeButton.disabled = state === "idle" || state === "closed" || state === "disconnected";
     }}
     if (reconnectButton) {{
-      reconnectButton.disabled = !(state === "closed" && sessionId && reconnectToken);
+      reconnectButton.disabled = !(state === "disconnected" && sessionId && reconnectToken);
+    }}
+    if (retryButton) {{
+      retryButton.disabled = state === "connecting" || state === "connected";
     }}
   }};
 
@@ -596,6 +614,18 @@ pub fn terminal_bridge_script() -> String {
     }}
   }};
 
+  const terminalWebSocketUrl = () => {{
+    if (window.{ws_config_global}) {{
+      return window.{ws_config_global};
+    }}
+    const configured = mount.dataset.wsEndpoint || "{endpoint}";
+    if (configured.startsWith("ws://") || configured.startsWith("wss://")) {{
+      return configured;
+    }}
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${{protocol}}//${{window.location.host}}${{configured}}`;
+  }};
+
   const resize = () => {{
     const rect = mount.getBoundingClientRect();
     cols = Math.max(20, Math.floor(rect.width / 9));
@@ -609,8 +639,9 @@ pub fn terminal_bridge_script() -> String {
   }};
 
   const connect = (reattach = false) => {{
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${{protocol}}//${{window.location.host}}{endpoint}`;
+    setStatus("Connecting", "connecting");
+    setError("");
+    const url = terminalWebSocketUrl();
     socket = new WebSocket(url);
 
     socket.addEventListener("open", () => {{
@@ -632,7 +663,14 @@ pub fn terminal_bridge_script() -> String {
     }});
 
     socket.addEventListener("message", (event) => {{
-      const message = JSON.parse(event.data);
+      let message;
+      try {{
+        message = JSON.parse(event.data);
+      }} catch (_error) {{
+        setStatus("Error", "error");
+        setError("Terminal server sent an invalid message.");
+        return;
+      }}
       if (message.type === "started") {{
         sessionId = message.session_id;
         reconnectToken = message.reconnect_token || null;
@@ -647,18 +685,23 @@ pub fn terminal_bridge_script() -> String {
         writeOutput(message.data);
       }} else if (message.type === "error") {{
         setStatus("Error", "error");
-        writeOutput(`\r\n${{message.error.message}}\r\n`);
+        const errorMessage = message.error && message.error.message
+          ? message.error.message
+          : "Terminal connection failed.";
+        setError(errorMessage);
+        writeOutput(`\r\n${{errorMessage}}\r\n`);
       }} else if (message.type === "exited") {{
         setStatus("Closed", "closed");
       }}
     }});
 
     socket.addEventListener("close", () => {{
-      setStatus("Closed", "closed");
+      setStatus("Disconnected", "disconnected");
     }});
 
     socket.addEventListener("error", () => {{
       setStatus("Error", "error");
+      setError("Unable to connect to the terminal WebSocket.");
     }});
   }};
 
@@ -745,11 +788,17 @@ pub fn terminal_bridge_script() -> String {
       connect(true);
     }});
   }}
+  if (retryButton) {{
+    retryButton.addEventListener("click", () => {{
+      connect();
+    }});
+  }}
   window.addEventListener("beforeunload", () => {{
     if (sessionId && reconnectToken) {{
       send({{ type: "detach", session_id: sessionId }});
     }}
   }});
+  setStatus("Idle", "idle");
   connect();
 }})();
 "##,
@@ -757,6 +806,7 @@ pub fn terminal_bridge_script() -> String {
         node_input_id = TERMINAL_NODE_INPUT_ID,
         endpoint = TERMINAL_WS_ENDPOINT,
         step_up_mfa_endpoint = STEP_UP_MFA_ENDPOINT,
+        ws_config_global = TERMINAL_WS_CONFIG_GLOBAL,
         cols = DEFAULT_TERMINAL_SIZE.cols,
         rows = DEFAULT_TERMINAL_SIZE.rows,
         status_base_class = STATUS_BASE_CLASS,
@@ -773,7 +823,8 @@ pub fn terminal_bridge_script() -> String {
 mod tests {
     use super::{
         app_title, terminal_bridge_script, STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID,
-        TERMINAL_NODE_INPUT_ID, TERMINAL_WS_ENDPOINT, XTERM_SCRIPT_URL, XTERM_STYLESHEET_URL,
+        TERMINAL_NODE_INPUT_ID, TERMINAL_WS_CONFIG_GLOBAL, TERMINAL_WS_ENDPOINT, XTERM_SCRIPT_URL,
+        XTERM_STYLESHEET_URL,
     };
 
     #[test]
@@ -810,5 +861,21 @@ mod tests {
         assert!(script.contains("terminal.write(data)"));
         assert!(script.contains("terminal.focus()"));
         assert!(script.contains("sunboltTerminalRenderer"));
+    }
+
+    #[test]
+    fn terminal_bridge_exposes_websocket_client_states() {
+        let script = terminal_bridge_script();
+
+        assert!(script.contains(TERMINAL_WS_CONFIG_GLOBAL));
+        assert!(script.contains("terminalWebSocketUrl"));
+        assert!(script.contains("new WebSocket(url)"));
+        assert!(script.contains(r#"setStatus("Idle", "idle")"#));
+        assert!(script.contains(r#"setStatus("Connecting", "connecting")"#));
+        assert!(script.contains(r#"setStatus("Active", "connected")"#));
+        assert!(script.contains(r#"setStatus("Disconnected", "disconnected")"#));
+        assert!(script.contains(r#"setStatus("Error", "error")"#));
+        assert!(script.contains("sunbolt-terminal-error"));
+        assert!(script.contains("sunbolt-terminal-retry"));
     }
 }
