@@ -78,6 +78,7 @@ pub const HEALTH_PATH: &str = "/health";
 pub const AUTH_LOGIN_PATH: &str = "/auth/login";
 pub const AUTH_LOGOUT_PATH: &str = "/auth/logout";
 pub const AUTH_ME_PATH: &str = "/auth/me";
+pub const AUTH_TERMINAL_ACCESS_PATH: &str = "/auth/terminal-access";
 pub const AUTH_MFA_STEP_UP_PATH: &str = "/auth/mfa/step-up";
 pub const ACCESS_HISTORY_PATH: &str = "/access/history";
 pub const AUDIT_LOGS_PATH: &str = "/audit/logs";
@@ -119,6 +120,10 @@ fn build_router(state: AppState) -> Router {
             post(auth_logout).layer(auth_layer.clone()),
         )
         .route(AUTH_ME_PATH, get(auth_me).layer(auth_layer.clone()))
+        .route(
+            AUTH_TERMINAL_ACCESS_PATH,
+            get(auth_terminal_access).layer(auth_layer.clone()),
+        )
         .route(
             ACCESS_HISTORY_PATH,
             get(access_history).layer(auth_layer.clone()),
@@ -885,6 +890,11 @@ struct CurrentUserResponse {
     user: User,
 }
 
+#[derive(Debug, Serialize)]
+struct TerminalAccessResponse {
+    accepted: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct StepUpMfaRequest {
     factor_type: FactorType,
@@ -1058,6 +1068,22 @@ async fn auth_logout(
 
 async fn auth_me(Extension(user): Extension<AuthenticatedUser>) -> impl IntoResponse {
     Json(CurrentUserResponse { user: user.0 })
+}
+
+async fn auth_terminal_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    match authorize_terminal_request(&state.auth, &headers) {
+        Ok(_) => Json(TerminalAccessResponse { accepted: true }).into_response(),
+        Err(error) => (
+            error.status_code(),
+            Json(ErrorResponse {
+                error: error.message(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn auth_mfa_step_up(
@@ -2680,7 +2706,8 @@ mod tests {
         TerminalAuthorizationError, TerminalSessionConfig, TerminalSessionRegistry,
         ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
         AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
-        ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH, SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
+        AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH,
+        SESSION_COOKIE_NAME, TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
@@ -3930,6 +3957,73 @@ mod tests {
             response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
             Some(&header::HeaderValue::from_static("http://localhost:8080"))
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_access_reports_step_up_requirement_before_success() {
+        let router = test_router_with_origins(vec!["http://localhost:8080".to_owned()]);
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(AUTH_TERMINAL_ACCESS_PATH)
+                    .header("origin", "http://localhost:8080")
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        assert_eq!(
+            payload.get("error").and_then(Value::as_str),
+            Some("step-up MFA is required before opening a terminal")
+        );
+
+        let mfa_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AUTH_MFA_STEP_UP_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("origin", "http://localhost:8080")
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::from(json!({ "factor_type": "totp" }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(mfa_response.status(), StatusCode::OK);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(AUTH_TERMINAL_ACCESS_PATH)
+                    .header("origin", "http://localhost:8080")
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        assert_eq!(payload.get("accepted").and_then(Value::as_bool), Some(true));
     }
 
     #[tokio::test]

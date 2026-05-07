@@ -9,6 +9,7 @@ pub const TERMINAL_NODE_INPUT_ID: &str = "sunbolt-terminal-node";
 pub const TERMINAL_WS_ENDPOINT: &str = "/terminal/ws";
 pub const AUTH_LOGIN_ENDPOINT: &str = "/auth/login";
 pub const AUTH_ME_ENDPOINT: &str = "/auth/me";
+pub const AUTH_TERMINAL_ACCESS_ENDPOINT: &str = "/auth/terminal-access";
 pub const STEP_UP_MFA_ENDPOINT: &str = "/auth/mfa/step-up";
 pub const CONTROL_PLANE_URL_CONFIG_GLOBAL: &str = "SUNBOLT_CONTROL_PLANE_URL";
 pub const TERMINAL_WS_CONFIG_GLOBAL: &str = "SUNBOLT_TERMINAL_WS_URL";
@@ -799,6 +800,26 @@ pub fn terminal_bridge_script() -> String {
     return fallbackMessage;
   }};
 
+  const ensureTerminalAccess = async () => {{
+    const response = await fetch(httpEndpointUrl("{auth_terminal_access_endpoint}"), {{
+      credentials: "include"
+    }});
+    if (response.ok) {{
+      return true;
+    }}
+    authenticated = response.status !== 401;
+    if (response.status === 401) {{
+      setAuthVisible(true);
+      setStatus("Login Required", "idle");
+    }} else if (response.status === 403) {{
+      setStatus("MFA Required", "error");
+    }} else {{
+      setStatus("Error", "error");
+    }}
+    setError(await readErrorMessage(response, "Unable to verify terminal access."));
+    return false;
+  }};
+
   const ensureAuthenticatedSession = async () => {{
     if (authenticated) {{
       return true;
@@ -838,6 +859,9 @@ pub fn terminal_bridge_script() -> String {
 
   const connect = async (reattach = false) => {{
     if (!(await ensureAuthenticatedSession())) {{
+      return;
+    }}
+    if (!(await ensureTerminalAccess())) {{
       return;
     }}
 
@@ -1109,6 +1133,7 @@ pub fn terminal_bridge_script() -> String {
         endpoint = TERMINAL_WS_ENDPOINT,
         auth_login_endpoint = AUTH_LOGIN_ENDPOINT,
         auth_me_endpoint = AUTH_ME_ENDPOINT,
+        auth_terminal_access_endpoint = AUTH_TERMINAL_ACCESS_ENDPOINT,
         step_up_mfa_endpoint = STEP_UP_MFA_ENDPOINT,
         control_plane_config_global = CONTROL_PLANE_URL_CONFIG_GLOBAL,
         ws_config_global = TERMINAL_WS_CONFIG_GLOBAL,
@@ -1128,9 +1153,9 @@ pub fn terminal_bridge_script() -> String {
 mod tests {
     use super::{
         app_title, browser_config_script, terminal_bridge_script, AUTH_LOGIN_ENDPOINT,
-        AUTH_ME_ENDPOINT, CONTROL_PLANE_URL_CONFIG_GLOBAL, STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID,
-        TERMINAL_NODE_INPUT_ID, TERMINAL_WS_CONFIG_GLOBAL, TERMINAL_WS_ENDPOINT, XTERM_SCRIPT_URL,
-        XTERM_STYLESHEET_URL,
+        AUTH_ME_ENDPOINT, AUTH_TERMINAL_ACCESS_ENDPOINT, CONTROL_PLANE_URL_CONFIG_GLOBAL,
+        STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID, TERMINAL_NODE_INPUT_ID,
+        TERMINAL_WS_CONFIG_GLOBAL, TERMINAL_WS_ENDPOINT, XTERM_SCRIPT_URL, XTERM_STYLESHEET_URL,
     };
 
     #[test]
@@ -1160,6 +1185,7 @@ mod tests {
         assert!(script.contains(TERMINAL_WS_ENDPOINT));
         assert!(script.contains(AUTH_LOGIN_ENDPOINT));
         assert!(script.contains(AUTH_ME_ENDPOINT));
+        assert!(script.contains(AUTH_TERMINAL_ACCESS_ENDPOINT));
         assert!(script.contains(STEP_UP_MFA_ENDPOINT));
         assert!(script.contains(TERMINAL_MOUNT_ID));
         assert!(script.contains(TERMINAL_NODE_INPUT_ID));
@@ -1195,11 +1221,13 @@ mod tests {
         assert!(script.contains("controlPlaneBaseUrl"));
         assert!(script.contains(r#"window.location.port !== "3000""#));
         assert!(script.contains("httpEndpointUrl"));
+        assert!(script.contains("ensureTerminalAccess"));
         assert!(script.contains("terminalWebSocketUrl"));
         assert!(script.contains("new WebSocket(url)"));
         assert!(script.contains(r#"setStatus("Idle", "idle")"#));
         assert!(script.contains(r#"setStatus("Checking Session", "connecting")"#));
         assert!(script.contains(r#"setStatus("Login Required", "idle")"#));
+        assert!(script.contains(r#"setStatus("MFA Required", "error")"#));
         assert!(script.contains(r#"setStatus("Connecting", "connecting")"#));
         assert!(script.contains(r#"setStatus("Active", "connected")"#));
         assert!(script.contains(r#"setStatus("Disconnected", "disconnected")"#));
