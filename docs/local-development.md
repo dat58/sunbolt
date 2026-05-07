@@ -2,6 +2,31 @@
 
 This guide runs the Sunbolt control plane and Dioxus web UI for the local terminal MVP.
 
+## Quick Start With Make
+
+From the repository root you can now use:
+
+```bash
+make control
+make ui
+make agent
+```
+
+Useful supporting targets:
+
+- `make env-init`: create `.env` from `.env.example` when missing.
+- `make ui-css-watch`: keep the Tailwind bundle updating during UI work.
+- `make agent-token`: print a fresh one-time enrollment token without starting the agent.
+- `make checks`: run `cargo test` and `cargo clippy --all-targets --all-features -- -D warnings`.
+
+The `Makefile` auto-loads `.env` when present. Override ports or local credentials per command when needed, for example:
+
+```bash
+make control ALLOWED_ORIGINS=http://127.0.0.1:8080
+make ui UI_PORT=8081
+make agent AGENT_NODE_NAME=$(hostname)
+```
+
 ## Control Plane
 
 Start from the repository root:
