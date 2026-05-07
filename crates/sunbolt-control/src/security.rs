@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap, Method};
 
 /// Content-Security-Policy value for the Sunbolt web app.
 ///
@@ -23,16 +23,35 @@ pub const CSP_HEADER_VALUE: &str = "default-src 'self'; \
 /// - Otherwise the `Origin` header value must appear in `allowed_origins`.
 #[must_use]
 pub fn is_allowed_origin(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
-    if allowed_origins.is_empty() {
+    if allows_any_origin(allowed_origins) {
         return true;
     }
-    let Some(origin) = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-    else {
+    let Some(origin) = request_origin(headers) else {
         return true;
     };
     allowed_origins.iter().any(|o| o == origin)
+}
+
+/// Returns `true` when the configured origin list is permissive.
+#[must_use]
+pub fn allows_any_origin(allowed_origins: &[String]) -> bool {
+    allowed_origins.is_empty() || allowed_origins.iter().any(|origin| origin == "*")
+}
+
+/// Returns the request `Origin` header as UTF-8 when present.
+#[must_use]
+pub fn request_origin(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+}
+
+/// Returns `true` when the request is a browser CORS preflight probe.
+#[must_use]
+pub fn is_cors_preflight(method: &Method, headers: &HeaderMap) -> bool {
+    method == Method::OPTIONS
+        && request_origin(headers).is_some()
+        && headers.contains_key(header::ACCESS_CONTROL_REQUEST_METHOD)
 }
 
 /// Returns a copy of `text` with hex strings of 32 or more characters replaced
@@ -76,8 +95,11 @@ pub fn redact_sensitive(text: &str) -> Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_allowed_origin, redact_sensitive, CSP_HEADER_VALUE};
-    use axum::http::{header::ORIGIN, HeaderMap, HeaderValue};
+    use super::{
+        allows_any_origin, is_allowed_origin, is_cors_preflight, redact_sensitive, request_origin,
+        CSP_HEADER_VALUE,
+    };
+    use axum::http::{header, header::ORIGIN, HeaderMap, HeaderValue, Method};
 
     fn headers_with_origin(origin: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -100,6 +122,13 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_origin_configuration_is_permissive() {
+        let headers = headers_with_origin("http://evil.example.com");
+        assert!(allows_any_origin(&["*".to_owned()]));
+        assert!(is_allowed_origin(&headers, &["*".to_owned()]));
+    }
+
+    #[test]
     fn origin_allowed_when_present_in_list() {
         let allowed = vec!["http://localhost:3000".to_owned()];
         let headers = headers_with_origin("http://localhost:3000");
@@ -117,6 +146,24 @@ mod tests {
     fn no_origin_header_is_always_allowed() {
         let allowed = vec!["http://localhost:3000".to_owned()];
         assert!(is_allowed_origin(&HeaderMap::new(), &allowed));
+    }
+
+    #[test]
+    fn request_origin_extracts_origin_header() {
+        let headers = headers_with_origin("http://localhost:8080");
+        assert_eq!(request_origin(&headers), Some("http://localhost:8080"));
+    }
+
+    #[test]
+    fn cors_preflight_is_detected() {
+        let mut headers = headers_with_origin("http://localhost:8080");
+        headers.insert(
+            header::ACCESS_CONTROL_REQUEST_METHOD,
+            HeaderValue::from_static("POST"),
+        );
+
+        assert!(is_cors_preflight(&Method::OPTIONS, &headers));
+        assert!(!is_cors_preflight(&Method::POST, &headers));
     }
 
     #[test]

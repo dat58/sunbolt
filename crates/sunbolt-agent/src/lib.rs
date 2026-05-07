@@ -435,7 +435,10 @@ impl AgentRuntime {
         Ok(())
     }
 
-    async fn enroll(&self, client: &reqwest::Client) -> Result<AgentEnrollmentResponse, AgentError> {
+    async fn enroll(
+        &self,
+        client: &reqwest::Client,
+    ) -> Result<AgentEnrollmentResponse, AgentError> {
         let request = AgentEnrollmentRequest::from_config(&self.config, &self.node_info)?;
         let response = client
             .post(join_url_path(
@@ -493,11 +496,12 @@ fn terminal_exit(exit: TerminalExitStatus) -> TerminalExit {
 }
 
 fn default_node_name(lookup: &mut impl FnMut(&str) -> Option<String>) -> String {
-    hostname_from_lookup(lookup)
-        .trim()
-        .is_empty()
-        .then(|| DEFAULT_NODE_NAME.to_owned())
-        .unwrap_or_else(|| hostname_from_lookup(lookup))
+    let hostname = hostname_from_lookup(lookup);
+    if hostname.trim().is_empty() {
+        DEFAULT_NODE_NAME.to_owned()
+    } else {
+        hostname
+    }
 }
 
 fn hostname_from_lookup(lookup: &mut impl FnMut(&str) -> Option<String>) -> String {

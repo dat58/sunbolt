@@ -21,7 +21,7 @@ use axum::{
         Extension, Json, Path, Request, State,
     },
     http::{
-        header::{COOKIE, SET_COOKIE},
+        header::{self, COOKIE, SET_COOKIE},
         HeaderMap, HeaderName, HeaderValue, StatusCode,
     },
     middleware::{from_fn, from_fn_with_state, Next},
@@ -104,26 +104,19 @@ fn build_router(state: AppState) -> Router {
         state.audit.clone(),
     );
     let auth_layer = from_fn_with_state(state.auth.clone(), require_auth_middleware);
-    let origin_layer = from_fn_with_state(state.allowed_origins.clone(), require_origin_middleware);
+    let origin_layer = from_fn_with_state(state.allowed_origins.clone(), browser_origin_middleware);
 
     Router::new()
         .route(HEALTH_PATH, get(health))
         .route(TERMINAL_WS_PATH, get(terminal_websocket))
-        .route(
-            AUTH_LOGIN_PATH,
-            post(auth_login).layer(origin_layer.clone()),
-        )
+        .route(AUTH_LOGIN_PATH, post(auth_login))
         .route(
             AUTH_MFA_STEP_UP_PATH,
-            post(auth_mfa_step_up)
-                .layer(auth_layer.clone())
-                .layer(origin_layer.clone()),
+            post(auth_mfa_step_up).layer(auth_layer.clone()),
         )
         .route(
             AUTH_LOGOUT_PATH,
-            post(auth_logout)
-                .layer(auth_layer.clone())
-                .layer(origin_layer.clone()),
+            post(auth_logout).layer(auth_layer.clone()),
         )
         .route(AUTH_ME_PATH, get(auth_me).layer(auth_layer.clone()))
         .route(
@@ -146,6 +139,7 @@ fn build_router(state: AppState) -> Router {
         )
         .route(AGENT_ENROLL_PATH, post(agent_enroll))
         .route(AGENT_HEARTBEAT_PATH, post(agent_heartbeat))
+        .layer(origin_layer)
         .layer(from_fn(security_headers_middleware))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -1319,7 +1313,7 @@ async fn security_headers_middleware(request: Request, next: Next) -> Response {
     response
 }
 
-async fn require_origin_middleware(
+async fn browser_origin_middleware(
     State(allowed_origins): State<Vec<String>>,
     request: Request,
     next: Next,
@@ -1333,7 +1327,41 @@ async fn require_origin_middleware(
         )
             .into_response();
     }
-    next.run(request).await
+
+    let request_origin = security::request_origin(request.headers()).map(str::to_owned);
+    if security::is_cors_preflight(request.method(), request.headers()) {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        if let Some(origin) = request_origin.as_deref() {
+            apply_cors_headers(response.headers_mut(), origin);
+        }
+        return response;
+    }
+
+    let mut response = next.run(request).await;
+    if let Some(origin) = request_origin.as_deref() {
+        apply_cors_headers(response.headers_mut(), origin);
+    }
+    response
+}
+
+fn apply_cors_headers(headers: &mut HeaderMap, origin: &str) {
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_str(origin).expect("request origin should be a valid header value"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        HeaderValue::from_static("true"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("content-type"),
+    );
+    headers.append(header::VARY, HeaderValue::from_static("Origin"));
 }
 
 async fn terminal_websocket(
@@ -3552,6 +3580,10 @@ mod tests {
     }
 
     fn test_router() -> axum::Router {
+        test_router_with_origins(vec![])
+    }
+
+    fn test_router_with_origins(allowed_origins: Vec<String>) -> axum::Router {
         let auth = test_auth_service();
 
         build_router(AppState {
@@ -3564,7 +3596,7 @@ mod tests {
             node_router: InMemoryNodeRouter::default(),
             login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
             terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
-            allowed_origins: vec![],
+            allowed_origins,
         })
     }
 
@@ -3786,20 +3818,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn login_preflight_returns_credentialed_cors_headers() {
+        let router = test_router_with_origins(vec!["http://localhost:8080".to_owned()]);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri(AUTH_LOGIN_PATH)
+                    .header("origin", "http://localhost:8080")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&header::HeaderValue::from_static("http://localhost:8080"))
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+            Some(&header::HeaderValue::from_static("true"))
+        );
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_HEADERS),
+            Some(&header::HeaderValue::from_static("content-type"))
+        );
+    }
+
+    #[tokio::test]
     async fn cross_origin_login_is_rejected_when_origin_list_is_configured() {
-        let auth = test_auth_service();
-        let router = build_router(AppState {
-            sessions: TerminalSessionRegistry::default(),
-            terminal_config: TerminalSessionConfig::from_env(),
-            auth,
-            audit: sunbolt_audit::AuditLog::default(),
-            node_enrollment: NodeEnrollmentRegistry::default(),
-            agent_connections: AgentConnectionRegistry::default(),
-            node_router: InMemoryNodeRouter::default(),
-            login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
-            terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
-            allowed_origins: vec!["http://localhost:3000".to_owned()],
-        });
+        let router = test_router_with_origins(vec!["http://localhost:3000".to_owned()]);
 
         let response = router
             .oneshot(
@@ -3822,19 +3876,7 @@ mod tests {
 
     #[tokio::test]
     async fn allowed_origin_login_succeeds() {
-        let auth = test_auth_service();
-        let router = build_router(AppState {
-            sessions: TerminalSessionRegistry::default(),
-            terminal_config: TerminalSessionConfig::from_env(),
-            auth,
-            audit: sunbolt_audit::AuditLog::default(),
-            node_enrollment: NodeEnrollmentRegistry::default(),
-            agent_connections: AgentConnectionRegistry::default(),
-            node_router: InMemoryNodeRouter::default(),
-            login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
-            terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
-            allowed_origins: vec!["http://localhost:3000".to_owned()],
-        });
+        let router = test_router_with_origins(vec!["http://localhost:3000".to_owned()]);
 
         let response = router
             .oneshot(
@@ -3853,5 +3895,67 @@ mod tests {
             .expect("router should respond");
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&header::HeaderValue::from_static("http://localhost:3000"))
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+            Some(&header::HeaderValue::from_static("true"))
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_me_succeeds_cross_origin_with_session_cookie() {
+        let router = test_router_with_origins(vec!["http://localhost:8080".to_owned()]);
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(AUTH_ME_PATH)
+                    .header("origin", "http://localhost:8080")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&header::HeaderValue::from_static("http://localhost:8080"))
+        );
+    }
+
+    #[tokio::test]
+    async fn wildcard_allowed_origins_reflects_request_origin() {
+        let router = test_router_with_origins(vec!["*".to_owned()]);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AUTH_LOGIN_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("origin", "http://127.0.0.1:8080")
+                    .body(Body::from(
+                        json!({"email": "admin@example.com", "password": "admin-password"})
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&header::HeaderValue::from_static("http://127.0.0.1:8080"))
+        );
     }
 }

@@ -7,7 +7,10 @@ pub const TERMINAL_NODE_INPUT_ID: &str = "sunbolt-terminal-node";
 
 /// WebSocket endpoint used by the terminal UI.
 pub const TERMINAL_WS_ENDPOINT: &str = "/terminal/ws";
+pub const AUTH_LOGIN_ENDPOINT: &str = "/auth/login";
+pub const AUTH_ME_ENDPOINT: &str = "/auth/me";
 pub const STEP_UP_MFA_ENDPOINT: &str = "/auth/mfa/step-up";
+pub const CONTROL_PLANE_URL_CONFIG_GLOBAL: &str = "SUNBOLT_CONTROL_PLANE_URL";
 pub const TERMINAL_WS_CONFIG_GLOBAL: &str = "SUNBOLT_TERMINAL_WS_URL";
 pub const XTERM_SCRIPT_URL: &str = "https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.min.js";
 pub const XTERM_STYLESHEET_URL: &str = "https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css";
@@ -39,6 +42,21 @@ const TEXT_INPUT_CLASS: &str =
 #[must_use]
 pub fn app_title() -> String {
     sunbolt_common::product_name().to_owned()
+}
+
+fn control_plane_config_script() -> Option<String> {
+    browser_config_script(option_env!("SUNBOLT_CONTROL_PLANE_URL"))
+}
+
+fn browser_config_script(control_plane_url: Option<&str>) -> Option<String> {
+    let control_plane_url = control_plane_url?.trim();
+    if control_plane_url.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        r#"window.{CONTROL_PLANE_URL_CONFIG_GLOBAL} = window.{CONTROL_PLANE_URL_CONFIG_GLOBAL} || "{control_plane_url}";"#
+    ))
 }
 
 /// Root Dioxus app for the Sunbolt web UI.
@@ -128,6 +146,11 @@ pub fn App() -> Element {
                 rel: "stylesheet",
                 href: asset!("/assets/sunbolt.css")
             }
+            if let Some(browser_config) = control_plane_config_script() {
+                script {
+                    dangerous_inner_html: browser_config
+                }
+            }
             script {
                 src: XTERM_SCRIPT_URL
             }
@@ -159,7 +182,7 @@ enum ShellPage {
 pub fn TerminalPageBody() -> Element {
     rsx! {
         section {
-            class: "grid min-h-0 grid-rows-[64px_32px_minmax(0,1fr)]",
+            class: "grid min-h-0 grid-rows-[64px_32px_auto_minmax(0,1fr)]",
             div {
                 class: "flex items-center justify-between border-b border-terminal-border bg-terminal-surface px-4",
                 div {
@@ -213,6 +236,39 @@ pub fn TerminalPageBody() -> Element {
                 id: "sunbolt-terminal-error",
                 class: "hidden items-center border-b border-terminal-border bg-terminal-bg px-4 text-xs text-warm-orange",
                 role: "status"
+            }
+            div {
+                id: "sunbolt-terminal-auth",
+                class: "hidden items-center gap-3 border-b border-terminal-border bg-terminal-surface px-4 py-3",
+                div {
+                    class: "min-w-0",
+                    p {
+                        class: "m-0 text-xs font-semibold text-terminal-text",
+                        "Sign in to open a terminal"
+                    }
+                    p {
+                        class: "m-0 text-xs text-terminal-muted",
+                        "Use the local bootstrap admin or another account already created in the control plane."
+                    }
+                }
+                input {
+                    id: "sunbolt-terminal-email",
+                    class: TEXT_INPUT_CLASS,
+                    placeholder: "email",
+                    autocomplete: "username"
+                }
+                input {
+                    id: "sunbolt-terminal-password",
+                    class: TEXT_INPUT_CLASS,
+                    placeholder: "password",
+                    r#type: "password",
+                    autocomplete: "current-password"
+                }
+                button {
+                    id: "sunbolt-terminal-login",
+                    class: ACTION_BUTTON_CLASS,
+                    "Sign In"
+                }
             }
             div {
                 id: TERMINAL_MOUNT_ID,
@@ -544,6 +600,10 @@ pub fn terminal_bridge_script() -> String {
   const mount = document.getElementById("{mount_id}");
   const status = document.getElementById("sunbolt-terminal-status");
   const errorDisplay = document.getElementById("sunbolt-terminal-error");
+  const authPanel = document.getElementById("sunbolt-terminal-auth");
+  const emailInput = document.getElementById("sunbolt-terminal-email");
+  const passwordInput = document.getElementById("sunbolt-terminal-password");
+  const loginButton = document.getElementById("sunbolt-terminal-login");
   const closeButton = document.getElementById("sunbolt-terminal-close");
   const mfaButton = document.getElementById("sunbolt-terminal-mfa");
   const reconnectButton = document.getElementById("sunbolt-terminal-reconnect");
@@ -565,12 +625,35 @@ pub fn terminal_bridge_script() -> String {
   let resizeObserver = null;
   let mountObserver = null;
   let cleanedUp = false;
+  let authenticated = false;
+  let loginBusy = false;
+  let currentStatusState = "idle";
 
   const terminalData = (data) => {{
     if (typeof data !== "string") {{
       return "";
     }}
     return data.replace(/\u0000/g, "");
+  }};
+
+  const normalizeBaseUrl = (value) => String(value || "").trim().replace(/\/+$/, "");
+
+  const controlPlaneBaseUrl = () => {{
+    if (window.{control_plane_config_global}) {{
+      return normalizeBaseUrl(window.{control_plane_config_global});
+    }}
+    if ((window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost")
+      && window.location.port !== "3000") {{
+      return `${{window.location.protocol}}//${{window.location.hostname}}:3000`;
+    }}
+    return normalizeBaseUrl(window.location.origin);
+  }};
+
+  const httpEndpointUrl = (path) => {{
+    if (path.startsWith("http://") || path.startsWith("https://")) {{
+      return path;
+    }}
+    return `${{controlPlaneBaseUrl()}}${{path}}`;
   }};
 
   const setError = (message) => {{
@@ -582,8 +665,35 @@ pub fn terminal_bridge_script() -> String {
     errorDisplay.classList.toggle("flex", Boolean(message));
   }};
 
+  const syncControls = () => {{
+    if (mfaButton) {{
+      mfaButton.disabled = !authenticated || loginBusy || currentStatusState === "connecting";
+    }}
+    if (closeButton) {{
+      closeButton.disabled = !authenticated
+        || currentStatusState === "idle"
+        || currentStatusState === "closed"
+        || currentStatusState === "disconnected";
+    }}
+    if (reconnectButton) {{
+      reconnectButton.disabled = !(
+        currentStatusState === "disconnected" && sessionId && reconnectToken
+      );
+    }}
+    if (retryButton) {{
+      retryButton.disabled = loginBusy
+        || currentStatusState === "connecting"
+        || currentStatusState === "connected";
+    }}
+    if (nodeInput) {{
+      nodeInput.disabled = !authenticated || loginBusy || currentStatusState === "connecting";
+    }}
+  }};
+
   const setStatus = (label, state) => {{
+    currentStatusState = state;
     if (!status) {{
+      syncControls();
       return;
     }}
     status.textContent = label;
@@ -596,15 +706,32 @@ pub fn terminal_bridge_script() -> String {
       closed: "{status_closed_class}"
     }};
     status.className = classes[state] || "{status_base_class}";
-    if (closeButton) {{
-      closeButton.disabled = state === "idle" || state === "closed" || state === "disconnected";
+    syncControls();
+  }};
+
+  const setAuthVisible = (visible) => {{
+    if (!authPanel) {{
+      return;
     }}
-    if (reconnectButton) {{
-      reconnectButton.disabled = !(state === "disconnected" && sessionId && reconnectToken);
+    authPanel.classList.toggle("hidden", !visible);
+    authPanel.classList.toggle("flex", visible);
+    if (visible && emailInput && !emailInput.value) {{
+      emailInput.focus();
     }}
-    if (retryButton) {{
-      retryButton.disabled = state === "connecting" || state === "connected";
+  }};
+
+  const setLoginBusy = (busy) => {{
+    loginBusy = busy;
+    if (loginButton) {{
+      loginButton.disabled = busy;
     }}
+    if (emailInput) {{
+      emailInput.disabled = busy;
+    }}
+    if (passwordInput) {{
+      passwordInput.disabled = busy;
+    }}
+    syncControls();
   }};
 
   const writeOutput = (data) => {{
@@ -633,6 +760,19 @@ pub fn terminal_bridge_script() -> String {
     if (configured.startsWith("ws://") || configured.startsWith("wss://")) {{
       return configured;
     }}
+    if (configured.startsWith("http://")) {{
+      return `ws://${{configured.slice("http://".length)}}`;
+    }}
+    if (configured.startsWith("https://")) {{
+      return `wss://${{configured.slice("https://".length)}}`;
+    }}
+    const controlPlaneUrl = controlPlaneBaseUrl();
+    if (controlPlaneUrl.startsWith("http://")) {{
+      return `ws://${{controlPlaneUrl.slice("http://".length)}}${{configured}}`;
+    }}
+    if (controlPlaneUrl.startsWith("https://")) {{
+      return `wss://${{controlPlaneUrl.slice("https://".length)}}${{configured}}`;
+    }}
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${{protocol}}//${{window.location.host}}${{configured}}`;
   }};
@@ -649,10 +789,64 @@ pub fn terminal_bridge_script() -> String {
     }}
   }};
 
-  const connect = (reattach = false) => {{
+  const readErrorMessage = async (response, fallbackMessage) => {{
+    try {{
+      const payload = await response.json();
+      if (payload && typeof payload.error === "string" && payload.error) {{
+        return payload.error;
+      }}
+    }} catch (_error) {{}}
+    return fallbackMessage;
+  }};
+
+  const ensureAuthenticatedSession = async () => {{
+    if (authenticated) {{
+      return true;
+    }}
+
+    setStatus("Checking Session", "connecting");
+    setError("");
+    try {{
+      const response = await fetch(httpEndpointUrl("{auth_me_endpoint}"), {{
+        credentials: "include"
+      }});
+      if (response.ok) {{
+        authenticated = true;
+        setAuthVisible(false);
+        setStatus("Idle", "idle");
+        return true;
+      }}
+      authenticated = false;
+      if (response.status === 401) {{
+        setAuthVisible(true);
+        setStatus("Login Required", "idle");
+        setError("Sign in before opening a terminal.");
+        return false;
+      }}
+      setAuthVisible(true);
+      setStatus("Error", "error");
+      setError(await readErrorMessage(response, "Unable to verify the current session."));
+      return false;
+    }} catch (_error) {{
+      authenticated = false;
+      setAuthVisible(true);
+      setStatus("Error", "error");
+      setError("Unable to reach the control plane.");
+      return false;
+    }}
+  }};
+
+  const connect = async (reattach = false) => {{
+    if (!(await ensureAuthenticatedSession())) {{
+      return;
+    }}
+
     setStatus("Connecting", "connecting");
     setError("");
     const url = terminalWebSocketUrl();
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {{
+      socket.close();
+    }}
     socket = new WebSocket(url);
 
     socket.addEventListener("open", () => {{
@@ -716,6 +910,50 @@ pub fn terminal_bridge_script() -> String {
     }});
   }};
 
+  const login = async () => {{
+    if (!emailInput || !passwordInput) {{
+      return;
+    }}
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    if (!email || !password) {{
+      setStatus("Login Required", "error");
+      setError("Email and password are required.");
+      return;
+    }}
+
+    setLoginBusy(true);
+    setStatus("Signing In", "connecting");
+    setError("");
+    try {{
+      const response = await fetch(httpEndpointUrl("{auth_login_endpoint}"), {{
+        method: "POST",
+        credentials: "include",
+        headers: {{ "content-type": "application/json" }},
+        body: JSON.stringify({{ email, password }})
+      }});
+      if (!response.ok) {{
+        authenticated = false;
+        setAuthVisible(true);
+        setStatus("Login Required", "error");
+        setError(await readErrorMessage(response, "Login failed."));
+        return;
+      }}
+      passwordInput.value = "";
+      authenticated = false;
+      if (await ensureAuthenticatedSession()) {{
+        connect();
+      }}
+    }} catch (_error) {{
+      authenticated = false;
+      setAuthVisible(true);
+      setStatus("Error", "error");
+      setError("Unable to sign in to the control plane.");
+    }} finally {{
+      setLoginBusy(false);
+    }}
+  }};
+
   const sendInput = (data) => {{
     if (!sessionId) {{
       return;
@@ -756,21 +994,35 @@ pub fn terminal_bridge_script() -> String {
   }};
 
   const completeStepUpMfa = async () => {{
-    setStatus("MFA", "connecting");
-    const response = await fetch("{step_up_mfa_endpoint}", {{
-      method: "POST",
-      headers: {{ "content-type": "application/json" }},
-      body: JSON.stringify({{ factor_type: "totp" }})
-    }});
-    if (!response.ok) {{
-      setStatus("MFA Required", "error");
+    if (!(await ensureAuthenticatedSession())) {{
       return;
     }}
-    setStatus("Connecting", "connecting");
-    connect();
+    setStatus("MFA", "connecting");
+    setError("");
+    try {{
+      const response = await fetch(httpEndpointUrl("{step_up_mfa_endpoint}"), {{
+        method: "POST",
+        credentials: "include",
+        headers: {{ "content-type": "application/json" }},
+        body: JSON.stringify({{ factor_type: "totp" }})
+      }});
+      if (!response.ok) {{
+        if (response.status === 401) {{
+          authenticated = false;
+          setAuthVisible(true);
+        }}
+        setStatus("MFA Required", "error");
+        setError(await readErrorMessage(response, "Step-up MFA request failed."));
+        return;
+      }}
+      connect();
+    }} catch (_error) {{
+      setStatus("Error", "error");
+      setError("Unable to complete step-up MFA.");
+    }}
   }};
 
-    if (window.Terminal) {{
+  if (window.Terminal) {{
     mount.dataset.sunboltTerminalRenderer = "xterm";
     terminal = new window.Terminal({{
       cursorBlink: true,
@@ -817,6 +1069,20 @@ pub fn terminal_bridge_script() -> String {
   if (mfaButton) {{
     mfaButton.addEventListener("click", completeStepUpMfa);
   }}
+  if (loginButton) {{
+    loginButton.addEventListener("click", login);
+  }}
+  for (const field of [emailInput, passwordInput]) {{
+    if (!field) {{
+      continue;
+    }}
+    field.addEventListener("keydown", (event) => {{
+      if (event.key === "Enter") {{
+        event.preventDefault();
+        login();
+      }}
+    }});
+  }}
   if (reconnectButton) {{
     reconnectButton.addEventListener("click", () => {{
       if (!sessionId || !reconnectToken) {{
@@ -834,13 +1100,17 @@ pub fn terminal_bridge_script() -> String {
   window.addEventListener("beforeunload", cleanupTerminal);
   window.addEventListener("pagehide", cleanupTerminal);
   setStatus("Idle", "idle");
+  setAuthVisible(false);
   connect();
 }})();
 "##,
         mount_id = TERMINAL_MOUNT_ID,
         node_input_id = TERMINAL_NODE_INPUT_ID,
         endpoint = TERMINAL_WS_ENDPOINT,
+        auth_login_endpoint = AUTH_LOGIN_ENDPOINT,
+        auth_me_endpoint = AUTH_ME_ENDPOINT,
         step_up_mfa_endpoint = STEP_UP_MFA_ENDPOINT,
+        control_plane_config_global = CONTROL_PLANE_URL_CONFIG_GLOBAL,
         ws_config_global = TERMINAL_WS_CONFIG_GLOBAL,
         cols = DEFAULT_TERMINAL_SIZE.cols,
         rows = DEFAULT_TERMINAL_SIZE.rows,
@@ -857,7 +1127,8 @@ pub fn terminal_bridge_script() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_title, terminal_bridge_script, STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID,
+        app_title, browser_config_script, terminal_bridge_script, AUTH_LOGIN_ENDPOINT,
+        AUTH_ME_ENDPOINT, CONTROL_PLANE_URL_CONFIG_GLOBAL, STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID,
         TERMINAL_NODE_INPUT_ID, TERMINAL_WS_CONFIG_GLOBAL, TERMINAL_WS_ENDPOINT, XTERM_SCRIPT_URL,
         XTERM_STYLESHEET_URL,
     };
@@ -868,10 +1139,27 @@ mod tests {
     }
 
     #[test]
+    fn browser_config_script_sets_control_plane_global() {
+        let script = browser_config_script(Some("http://127.0.0.1:3000"))
+            .expect("script should be generated");
+
+        assert!(script.contains(CONTROL_PLANE_URL_CONFIG_GLOBAL));
+        assert!(script.contains("http://127.0.0.1:3000"));
+    }
+
+    #[test]
+    fn browser_config_script_ignores_empty_urls() {
+        assert!(browser_config_script(Some("   ")).is_none());
+        assert!(browser_config_script(None).is_none());
+    }
+
+    #[test]
     fn terminal_bridge_uses_terminal_websocket_endpoint() {
         let script = terminal_bridge_script();
 
         assert!(script.contains(TERMINAL_WS_ENDPOINT));
+        assert!(script.contains(AUTH_LOGIN_ENDPOINT));
+        assert!(script.contains(AUTH_ME_ENDPOINT));
         assert!(script.contains(STEP_UP_MFA_ENDPOINT));
         assert!(script.contains(TERMINAL_MOUNT_ID));
         assert!(script.contains(TERMINAL_NODE_INPUT_ID));
@@ -902,16 +1190,33 @@ mod tests {
     fn terminal_bridge_exposes_websocket_client_states() {
         let script = terminal_bridge_script();
 
+        assert!(script.contains(CONTROL_PLANE_URL_CONFIG_GLOBAL));
         assert!(script.contains(TERMINAL_WS_CONFIG_GLOBAL));
+        assert!(script.contains("controlPlaneBaseUrl"));
+        assert!(script.contains(r#"window.location.port !== "3000""#));
+        assert!(script.contains("httpEndpointUrl"));
         assert!(script.contains("terminalWebSocketUrl"));
         assert!(script.contains("new WebSocket(url)"));
         assert!(script.contains(r#"setStatus("Idle", "idle")"#));
+        assert!(script.contains(r#"setStatus("Checking Session", "connecting")"#));
+        assert!(script.contains(r#"setStatus("Login Required", "idle")"#));
         assert!(script.contains(r#"setStatus("Connecting", "connecting")"#));
         assert!(script.contains(r#"setStatus("Active", "connected")"#));
         assert!(script.contains(r#"setStatus("Disconnected", "disconnected")"#));
         assert!(script.contains(r#"setStatus("Error", "error")"#));
         assert!(script.contains("sunbolt-terminal-error"));
         assert!(script.contains("sunbolt-terminal-retry"));
+    }
+
+    #[test]
+    fn terminal_bridge_requires_auth_before_opening_websocket() {
+        let script = terminal_bridge_script();
+
+        assert!(script.contains("ensureAuthenticatedSession"));
+        assert!(script.contains(r#"fetch(httpEndpointUrl("/auth/me")"#));
+        assert!(script.contains(r#"fetch(httpEndpointUrl("/auth/login")"#));
+        assert!(script.contains("credentials: \"include\""));
+        assert!(script.contains("Sign in before opening a terminal."));
     }
 
     #[test]

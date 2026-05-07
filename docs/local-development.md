@@ -34,22 +34,25 @@ npm run css:build
 Run the Dioxus web UI with the Dioxus CLI:
 
 ```bash
+SUNBOLT_CONTROL_PLANE_URL=http://127.0.0.1:3000 \
 dx serve --platform web --package sunbolt-ui --port 8080
 ```
 
-When the UI is served from a different origin than the control plane, allow that origin in the backend:
+When the UI is served from a different origin than the control plane, allow that origin in the backend. For local development you can use the permissive shortcut below:
+
+```bash
+SUNBOLT_ALLOWED_ORIGINS=* cargo run -p sunbolt-control
+```
+
+For a tighter local setup, allow only the Dioxus origin instead:
 
 ```bash
 SUNBOLT_ALLOWED_ORIGINS=http://127.0.0.1:8080 cargo run -p sunbolt-control
 ```
 
-The terminal bridge defaults to the current browser host plus `/terminal/ws`. If the UI is served separately from the control plane, configure the browser global before the Sunbolt app loads:
+The UI now uses `SUNBOLT_CONTROL_PLANE_URL` to derive `auth` and terminal endpoints. It injects `window.SUNBOLT_CONTROL_PLANE_URL` before the terminal bridge runs, so the browser talks to the control plane on `127.0.0.1:3000` even when Dioxus serves the UI from `127.0.0.1:8080`.
 
-```html
-<script>
-  window.SUNBOLT_TERMINAL_WS_URL = "ws://127.0.0.1:3000/terminal/ws";
-</script>
-```
+`SUNBOLT_ALLOWED_ORIGINS=*` is a local-dev shorthand. The backend reflects the browser `Origin` header on credentialed responses instead of sending a literal `Access-Control-Allow-Origin: *`, because login and session APIs rely on cookies.
 
 ## Local Agent
 
