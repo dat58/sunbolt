@@ -619,7 +619,7 @@ fn AdminTable(
 pub fn terminal_bridge_script() -> String {
     format!(
         r##"
-(() => {{
+(async () => {{
   const mount = document.getElementById("{mount_id}");
   const status = document.getElementById("sunbolt-terminal-status");
   const errorDisplay = document.getElementById("sunbolt-terminal-error");
@@ -658,6 +658,39 @@ pub fn terminal_bridge_script() -> String {
     }}
     return data.replace(/\u0000/g, "");
   }};
+
+  const stripTerminalControls = (data) => terminalData(data)
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1B[=>]/g, "");
+
+  const loadXterm = () => new Promise((resolve) => {{
+    if (window.Terminal) {{
+      resolve(true);
+      return;
+    }}
+
+    const existingScript = Array.from(document.scripts)
+      .find((script) => script.src === "{xterm_script_url}");
+    const script = existingScript || document.createElement("script");
+    let settled = false;
+    const finish = (loaded) => {{
+      if (settled) {{
+        return;
+      }}
+      settled = true;
+      resolve(Boolean(loaded && window.Terminal));
+    }};
+
+    script.addEventListener("load", () => finish(true), {{ once: true }});
+    script.addEventListener("error", () => finish(false), {{ once: true }});
+    if (!existingScript) {{
+      script.src = "{xterm_script_url}";
+      script.async = true;
+      document.head.appendChild(script);
+    }}
+    window.setTimeout(() => finish(Boolean(window.Terminal)), 3000);
+  }});
 
   const normalizeBaseUrl = (value) => String(value || "").trim().replace(/\/+$/, "");
 
@@ -764,7 +797,7 @@ pub fn terminal_bridge_script() -> String {
       return;
     }}
     if (fallbackOutput) {{
-      fallbackOutput.textContent += safeData;
+      fallbackOutput.textContent += stripTerminalControls(safeData);
       fallbackOutput.scrollTop = fallbackOutput.scrollHeight;
     }}
   }};
@@ -1068,7 +1101,7 @@ pub fn terminal_bridge_script() -> String {
     }}
   }};
 
-  if (window.Terminal) {{
+  if (await loadXterm()) {{
     mount.dataset.sunboltTerminalRenderer = "xterm";
     terminal = new window.Terminal({{
       cursorBlink: true,
@@ -1092,10 +1125,40 @@ pub fn terminal_bridge_script() -> String {
     fallbackOutput.className = "{fallback_output_class}";
     fallbackInput = document.createElement("textarea");
     fallbackInput.className = "{fallback_input_class}";
+    fallbackInput.placeholder = "Type a command and press Enter";
     fallbackInput.spellcheck = false;
-    fallbackInput.addEventListener("input", () => {{
-      sendInput(fallbackInput.value);
-      fallbackInput.value = "";
+    fallbackInput.addEventListener("keydown", (event) => {{
+      const keyMap = {{
+        ArrowUp: "\x1b[A",
+        ArrowDown: "\x1b[B",
+        ArrowRight: "\x1b[C",
+        ArrowLeft: "\x1b[D",
+        Home: "\x1b[H",
+        End: "\x1b[F",
+        Delete: "\x1b[3~",
+        PageUp: "\x1b[5~",
+        PageDown: "\x1b[6~"
+      }};
+      if (event.ctrlKey && event.key.toLowerCase() === "c") {{
+        event.preventDefault();
+        sendInput("\x03");
+        return;
+      }}
+      if (event.key === "Tab") {{
+        event.preventDefault();
+        sendInput("\t");
+        return;
+      }}
+      if (keyMap[event.key]) {{
+        event.preventDefault();
+        sendInput(keyMap[event.key]);
+        return;
+      }}
+      if (event.key === "Enter" && !event.shiftKey) {{
+        event.preventDefault();
+        sendInput(`${{fallbackInput.value}}\r`);
+        fallbackInput.value = "";
+      }}
     }});
     mount.append(fallbackOutput, fallbackInput);
     fallbackInput.focus();
@@ -1159,6 +1222,7 @@ pub fn terminal_bridge_script() -> String {
         step_up_mfa_endpoint = STEP_UP_MFA_ENDPOINT,
         control_plane_config_global = CONTROL_PLANE_URL_CONFIG_GLOBAL,
         ws_config_global = TERMINAL_WS_CONFIG_GLOBAL,
+        xterm_script_url = XTERM_SCRIPT_URL,
         cols = DEFAULT_TERMINAL_SIZE.cols,
         rows = DEFAULT_TERMINAL_SIZE.rows,
         status_base_class = STATUS_BASE_CLASS,
@@ -1228,6 +1292,8 @@ mod tests {
         assert!(XTERM_SCRIPT_URL.contains("@xterm/xterm@5.5.0"));
         assert!(XTERM_STYLESHEET_URL.contains("@xterm/xterm@5.5.0"));
         assert!(script.contains("window.Terminal"));
+        assert!(script.contains("loadXterm"));
+        assert!(script.contains(XTERM_SCRIPT_URL));
         assert!(script.contains("terminal.open(mount)"));
         assert!(script.contains("terminal.write(safeData)"));
         assert!(script.contains("terminal.focus()"));
@@ -1274,10 +1340,24 @@ mod tests {
         let script = terminal_bridge_script();
 
         assert!(script.contains("terminalData"));
+        assert!(script.contains("stripTerminalControls"));
         assert!(script.contains(r#"replace(/\u0000/g, "")"#));
         assert!(script.contains("terminal.onData(sendInput)"));
         assert!(script.contains(r#"type: "input""#));
         assert!(script.contains("writeOutput(message.data)"));
+    }
+
+    #[test]
+    fn terminal_bridge_fallback_keeps_command_entry_and_keyboard_controls() {
+        let script = terminal_bridge_script();
+
+        assert!(script.contains("Type a command and press Enter"));
+        assert!(script.contains("keydown"));
+        assert!(script.contains("ArrowUp"));
+        assert!(script.contains("ArrowDown"));
+        assert!(script.contains(r#"event.key === "Tab""#));
+        assert!(script.contains(r#"event.key === "Enter""#));
+        assert!(script.contains("fallbackInput.value = \"\""));
     }
 
     #[test]
