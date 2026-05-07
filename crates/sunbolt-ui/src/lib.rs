@@ -12,8 +12,8 @@ pub const AUTH_ME_ENDPOINT: &str = "/auth/me";
 pub const STEP_UP_MFA_ENDPOINT: &str = "/auth/mfa/step-up";
 pub const CONTROL_PLANE_URL_CONFIG_GLOBAL: &str = "SUNBOLT_CONTROL_PLANE_URL";
 pub const TERMINAL_WS_CONFIG_GLOBAL: &str = "SUNBOLT_TERMINAL_WS_URL";
-pub const XTERM_SCRIPT_URL: &str = "https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.min.js";
-pub const XTERM_STYLESHEET_URL: &str = "https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css";
+pub const XTERM_SCRIPT_URL: &str = "https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js";
+pub const XTERM_STYLESHEET_URL: &str = "https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css";
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
 const STATUS_BASE_CLASS: &str = "inline-flex h-6 items-center rounded-full border px-2.5 text-xs";
@@ -1177,8 +1177,8 @@ mod tests {
     fn terminal_bridge_uses_xterm_renderer() {
         let script = terminal_bridge_script();
 
-        assert!(XTERM_SCRIPT_URL.contains("xterm@5.5.0"));
-        assert!(XTERM_STYLESHEET_URL.contains("xterm@5.5.0"));
+        assert!(XTERM_SCRIPT_URL.contains("@xterm/xterm@5.5.0"));
+        assert!(XTERM_STYLESHEET_URL.contains("@xterm/xterm@5.5.0"));
         assert!(script.contains("window.Terminal"));
         assert!(script.contains("terminal.open(mount)"));
         assert!(script.contains("terminal.write(safeData)"));
