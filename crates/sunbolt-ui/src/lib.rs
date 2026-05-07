@@ -13,31 +13,32 @@ pub const AUTH_TERMINAL_ACCESS_ENDPOINT: &str = "/auth/terminal-access";
 pub const STEP_UP_MFA_ENDPOINT: &str = "/auth/mfa/step-up";
 pub const CONTROL_PLANE_URL_CONFIG_GLOBAL: &str = "SUNBOLT_CONTROL_PLANE_URL";
 pub const TERMINAL_WS_CONFIG_GLOBAL: &str = "SUNBOLT_TERMINAL_WS_URL";
-pub const XTERM_SCRIPT_URL: &str = "https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js";
-pub const XTERM_STYLESHEET_URL: &str = "https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css";
+pub const XTERM_SCRIPT_URL: &str =
+    "https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js";
+pub const XTERM_STYLESHEET_URL: &str =
+    "https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css";
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
-const STATUS_BASE_CLASS: &str = "inline-flex h-6 items-center rounded-full border px-2.5 text-xs";
+const STATUS_BASE_CLASS: &str = "sunbolt-status border-terminal-border text-terminal-muted";
 const STATUS_CONNECTING_CLASS: &str =
-    "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-terminal-border text-terminal-muted";
+    "sunbolt-status border-sun-amber/70 bg-sun-amber/10 text-sun-amber";
 const STATUS_CONNECTED_CLASS: &str =
-    "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-lightning-cyan text-lightning-cyan";
+    "sunbolt-status border-lightning-cyan/70 bg-lightning-cyan/10 text-lightning-cyan";
 const STATUS_ERROR_CLASS: &str =
-    "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-warm-orange text-warm-orange";
+    "sunbolt-status border-warm-orange/70 bg-warm-orange/10 text-warm-orange";
 const STATUS_CLOSED_CLASS: &str =
-    "inline-flex h-6 items-center rounded-full border px-2.5 text-xs border-terminal-border text-terminal-muted";
-const ACTION_BUTTON_CLASS: &str =
-    "inline-flex h-7 items-center border border-terminal-border bg-terminal-bg px-3 text-xs text-terminal-text hover:border-lightning-cyan hover:text-lightning-cyan disabled:cursor-not-allowed disabled:opacity-40";
-const NAV_BUTTON_CLASS: &str =
-    "inline-flex h-7 items-center border border-terminal-border bg-terminal-bg px-3 text-xs text-terminal-muted hover:border-lightning-cyan hover:text-terminal-text";
-const NAV_BUTTON_ACTIVE_CLASS: &str =
-    "inline-flex h-7 items-center border border-lightning-cyan bg-terminal-bg px-3 text-xs text-lightning-cyan";
-const FALLBACK_OUTPUT_CLASS: &str =
-    "box-border h-[calc(100%-72px)] m-0 overflow-auto whitespace-pre-wrap font-mono text-sm";
-const FALLBACK_INPUT_CLASS: &str =
-    "mt-3 h-14 w-full resize-none box-border border border-terminal-border bg-terminal-surface font-mono text-sm text-terminal-text";
-const TEXT_INPUT_CLASS: &str =
-    "h-8 w-52 border border-terminal-border bg-terminal-bg px-2 text-xs text-terminal-text outline-none focus:border-lightning-cyan";
+    "sunbolt-status border-terminal-border bg-terminal-bg/80 text-terminal-muted";
+const ACTION_BUTTON_CLASS: &str = "sunbolt-button sunbolt-button-secondary";
+const PRIMARY_BUTTON_CLASS: &str = "sunbolt-button sunbolt-button-primary";
+const DANGER_BUTTON_CLASS: &str = "sunbolt-button sunbolt-button-danger";
+const NAV_BUTTON_CLASS: &str = "sunbolt-nav-button";
+const NAV_BUTTON_ACTIVE_CLASS: &str = "sunbolt-nav-button sunbolt-nav-button-active";
+const FALLBACK_OUTPUT_CLASS: &str = "sunbolt-fallback-output";
+const FALLBACK_INPUT_CLASS: &str = "sunbolt-fallback-input";
+const TEXT_INPUT_CLASS: &str = "sunbolt-input";
+const CARD_CLASS: &str = "sunbolt-card";
+const TABLE_WRAP_CLASS: &str = "sunbolt-table-wrap";
+const TABLE_CLASS: &str = "sunbolt-table";
 
 /// Returns the display title for the web UI shell.
 #[must_use]
@@ -67,17 +68,32 @@ pub fn App() -> Element {
 
     rsx! {
         main {
-            class: "min-h-screen bg-terminal-bg font-sans text-terminal-text",
+            class: "sunbolt-shell",
             section {
-                class: "grid min-h-screen grid-rows-[48px_minmax(0,1fr)]",
+                class: "sunbolt-app-grid",
                 header {
-                    class: "flex items-center justify-between border-b border-terminal-border bg-terminal-surface px-4",
-                    h1 {
-                        class: "m-0 text-[15px] font-bold text-sun-amber",
-                        "Sunbolt"
+                    class: "sunbolt-topbar",
+                    div {
+                        class: "sunbolt-brand",
+                        div {
+                            class: "sunbolt-brand-mark",
+                            "S"
+                        }
+                        div {
+                            class: "min-w-0",
+                            h1 {
+                                class: "m-0 text-xl font-black tracking-tight text-terminal-text",
+                                "Sunbolt"
+                            }
+                            p {
+                                class: "m-0 text-xs font-medium text-terminal-muted",
+                                "Secure terminal control plane"
+                            }
+                        }
                     }
                     nav {
-                        class: "flex items-center gap-2",
+                        class: "sunbolt-nav",
+                        "aria-label": "Primary navigation",
                         button {
                             class: if page() == ShellPage::Terminal {
                                 NAV_BUTTON_ACTIVE_CLASS
@@ -183,26 +199,26 @@ enum ShellPage {
 pub fn TerminalPageBody() -> Element {
     rsx! {
         section {
-            class: "grid min-h-0 grid-rows-[64px_32px_auto_minmax(0,1fr)]",
+            class: "sunbolt-terminal-page",
             div {
-                class: "flex items-center justify-between border-b border-terminal-border bg-terminal-surface px-4",
+                class: "sunbolt-terminal-toolbar",
                 div {
                     class: "min-w-0",
                     h2 {
-                        class: "m-0 text-sm font-semibold text-terminal-text",
-                        "Terminal"
+                        class: "m-0 text-lg font-black tracking-tight text-terminal-text",
+                        "Terminal Workspace"
                     }
                     p {
                         class: "m-0 text-xs text-terminal-muted",
-                        "Local shell"
+                        "Authenticated local shell with audit-ready session controls."
                     }
                 }
                 div {
-                    class: "flex items-center gap-2",
+                    class: "sunbolt-terminal-controls",
                     input {
                         id: TERMINAL_NODE_INPUT_ID,
                         class: TEXT_INPUT_CLASS,
-                        placeholder: "node id",
+                        placeholder: "node id, empty for local",
                         value: ""
                     }
                     div {
@@ -212,7 +228,7 @@ pub fn TerminalPageBody() -> Element {
                     }
                     button {
                         id: "sunbolt-terminal-mfa",
-                        class: ACTION_BUTTON_CLASS,
+                        class: PRIMARY_BUTTON_CLASS,
                         "Step-up MFA"
                     }
                     button {
@@ -228,23 +244,23 @@ pub fn TerminalPageBody() -> Element {
                     }
                     button {
                         id: "sunbolt-terminal-close",
-                        class: ACTION_BUTTON_CLASS,
+                        class: DANGER_BUTTON_CLASS,
                         "Close"
                     }
                 }
             }
             div {
                 id: "sunbolt-terminal-error",
-                class: "hidden items-center border-b border-terminal-border bg-terminal-bg px-4 text-xs text-warm-orange",
+                class: "sunbolt-alert hidden items-center",
                 role: "status"
             }
             div {
                 id: "sunbolt-terminal-auth",
-                class: "hidden items-center gap-3 border-b border-terminal-border bg-terminal-surface px-4 py-3",
+                class: "sunbolt-auth-panel hidden",
                 div {
                     class: "min-w-0",
                     p {
-                        class: "m-0 text-xs font-semibold text-terminal-text",
+                        class: "m-0 text-sm font-semibold text-terminal-text",
                         "Sign in to open a terminal"
                     }
                     p {
@@ -267,13 +283,13 @@ pub fn TerminalPageBody() -> Element {
                 }
                 button {
                     id: "sunbolt-terminal-login",
-                    class: ACTION_BUTTON_CLASS,
+                    class: PRIMARY_BUTTON_CLASS,
                     "Sign In"
                 }
             }
             div {
                 id: TERMINAL_MOUNT_ID,
-                class: "min-h-0 overflow-hidden p-3 [&_.xterm]:h-full",
+                class: "sunbolt-terminal-body",
                 tabindex: "0",
                 role: "application",
                 "aria-label": "Terminal viewport",
@@ -288,30 +304,32 @@ pub fn TerminalPageBody() -> Element {
 pub fn AccessHistoryPage() -> Element {
     rsx! {
         section {
-            class: "p-4",
-            h2 {
-                class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
-                "Access History"
-            }
+            class: "sunbolt-page",
             div {
-                class: "overflow-auto border border-terminal-border",
-                table {
-                    class: "w-full border-collapse text-sm",
-                    thead {
-                        class: "bg-terminal-surface text-terminal-muted",
-                        tr {
-                            th { class: "p-2 text-left font-medium", "Time" }
-                            th { class: "p-2 text-left font-medium", "Event" }
-                            th { class: "p-2 text-left font-medium", "Actor" }
-                            th { class: "p-2 text-left font-medium", "Message" }
+                class: CARD_CLASS,
+                h2 {
+                    class: "mb-3 mt-0 text-lg font-black tracking-tight text-terminal-text",
+                    "Access History"
+                }
+                div {
+                    class: TABLE_WRAP_CLASS,
+                    table {
+                        class: TABLE_CLASS,
+                        thead {
+                            tr {
+                                th { "Time" }
+                                th { "Event" }
+                                th { "Actor" }
+                                th { "Message" }
+                            }
                         }
-                    }
-                    tbody {
-                        tr {
-                            td { class: "p-2 text-terminal-muted", "Pending" }
-                            td { class: "p-2 text-terminal-text", "user.login.success" }
-                            td { class: "p-2 text-terminal-text", "admin@example.com" }
-                            td { class: "p-2 text-terminal-muted", "Awaiting backend list wiring" }
+                        tbody {
+                            tr {
+                                td { class: "text-terminal-muted", "Pending" }
+                                td { class: "text-terminal-text", "user.login.success" }
+                                td { class: "text-terminal-text", "admin@example.com" }
+                                td { class: "text-terminal-muted", "Awaiting backend list wiring" }
+                            }
                         }
                     }
                 }
@@ -324,30 +342,32 @@ pub fn AccessHistoryPage() -> Element {
 pub fn AuditLogPage() -> Element {
     rsx! {
         section {
-            class: "p-4",
-            h2 {
-                class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
-                "Audit Logs"
-            }
+            class: "sunbolt-page",
             div {
-                class: "overflow-auto border border-terminal-border",
-                table {
-                    class: "w-full border-collapse text-sm",
-                    thead {
-                        class: "bg-terminal-surface text-terminal-muted",
-                        tr {
-                            th { class: "p-2 text-left font-medium", "Time" }
-                            th { class: "p-2 text-left font-medium", "Kind" }
-                            th { class: "p-2 text-left font-medium", "Actor" }
-                            th { class: "p-2 text-left font-medium", "Message" }
+                class: CARD_CLASS,
+                h2 {
+                    class: "mb-3 mt-0 text-lg font-black tracking-tight text-terminal-text",
+                    "Audit Logs"
+                }
+                div {
+                    class: TABLE_WRAP_CLASS,
+                    table {
+                        class: TABLE_CLASS,
+                        thead {
+                            tr {
+                                th { "Time" }
+                                th { "Kind" }
+                                th { "Actor" }
+                                th { "Message" }
+                            }
                         }
-                    }
-                    tbody {
-                        tr {
-                            td { class: "p-2 text-terminal-muted", "Pending" }
-                            td { class: "p-2 text-terminal-text", "terminal.opened" }
-                            td { class: "p-2 text-terminal-text", "admin@example.com" }
-                            td { class: "p-2 text-terminal-muted", "Awaiting backend list wiring" }
+                        tbody {
+                            tr {
+                                td { class: "text-terminal-muted", "Pending" }
+                                td { class: "text-terminal-text", "terminal.opened" }
+                                td { class: "text-terminal-text", "admin@example.com" }
+                                td { class: "text-terminal-muted", "Awaiting backend list wiring" }
+                            }
                         }
                     }
                 }
@@ -360,51 +380,56 @@ pub fn AuditLogPage() -> Element {
 pub fn NodesPage() -> Element {
     rsx! {
         section {
-            class: "grid gap-4 p-4",
+            class: "sunbolt-page grid gap-4",
             div {
-                class: "border border-terminal-border bg-terminal-surface p-4",
+                class: CARD_CLASS,
                 h2 {
-                    class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
+                    class: "mb-2 mt-0 text-lg font-black tracking-tight text-terminal-text",
                     "Node Enrollment"
                 }
+                p {
+                    class: "mb-3 mt-0 text-sm text-terminal-muted",
+                    "Start an enrolled agent with a one-time token from the control plane."
+                }
                 pre {
-                    class: "m-0 overflow-auto border border-terminal-border bg-terminal-bg p-3 font-mono text-xs text-lightning-cyan",
+                    class: "sunbolt-command",
                     "SUNBOLT_CONTROL_PLANE_URL=http://127.0.0.1:3000 SUNBOLT_AGENT_ENROLLMENT_TOKEN=<token> cargo run -p sunbolt-agent"
                 }
             }
             div {
-                class: "overflow-auto border border-terminal-border",
+                class: TABLE_WRAP_CLASS,
                 table {
-                    class: "w-full border-collapse text-sm",
+                    class: TABLE_CLASS,
                     thead {
-                        class: "bg-terminal-surface text-terminal-muted",
                         tr {
-                            th { class: "p-2 text-left font-medium", "Node" }
-                            th { class: "p-2 text-left font-medium", "Hostname" }
-                            th { class: "p-2 text-left font-medium", "OS" }
-                            th { class: "p-2 text-left font-medium", "Status" }
-                            th { class: "p-2 text-left font-medium", "Actions" }
+                            th { "Node" }
+                            th { "Hostname" }
+                            th { "OS" }
+                            th { "Status" }
+                            th { "Actions" }
                         }
                     }
                     tbody {
                         tr {
-                            td { class: "p-2 text-terminal-text", "node-1" }
-                            td { class: "p-2 text-terminal-text", "host-a" }
-                            td { class: "p-2 text-terminal-text", "linux" }
-                            td { class: "p-2 text-lightning-cyan", "online" }
+                            td { class: "font-mono text-xs text-terminal-text", "node-1" }
+                            td { class: "text-terminal-text", "host-a" }
+                            td { class: "text-terminal-text", "linux" }
                             td {
-                                class: "flex gap-2 p-2",
+                                span { class: STATUS_CONNECTED_CLASS, "online" }
+                            }
+                            td {
+                                class: "flex gap-2",
                                 button { class: ACTION_BUTTON_CLASS, "Details" }
-                                button { class: ACTION_BUTTON_CLASS, "Revoke" }
+                                button { class: DANGER_BUTTON_CLASS, "Revoke" }
                             }
                         }
                     }
                 }
             }
             div {
-                class: "border border-terminal-border bg-terminal-surface p-4",
+                class: CARD_CLASS,
                 h3 {
-                    class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
+                    class: "mb-3 mt-0 text-lg font-black tracking-tight text-terminal-text",
                     "Node Details"
                 }
                 dl {
@@ -427,41 +452,41 @@ pub fn NodesPage() -> Element {
 pub fn SecurityPage() -> Element {
     rsx! {
         section {
-            class: "grid gap-4 p-4",
+            class: "sunbolt-page grid gap-4",
             div {
-                class: "border border-terminal-border bg-terminal-surface p-4",
+                class: CARD_CLASS,
                 div {
                     class: "mb-3 flex items-center justify-between gap-3",
                     h2 {
-                        class: "m-0 text-sm font-semibold text-terminal-text",
+                        class: "m-0 text-lg font-black tracking-tight text-terminal-text",
                         "Passkeys"
                     }
                     button {
-                        class: ACTION_BUTTON_CLASS,
+                        class: PRIMARY_BUTTON_CLASS,
                         "Add passkey"
                     }
                 }
                 div {
-                    class: "overflow-auto border border-terminal-border",
+                    class: TABLE_WRAP_CLASS,
                     table {
-                        class: "w-full border-collapse text-sm",
+                        class: TABLE_CLASS,
                         thead {
-                            class: "bg-terminal-bg text-terminal-muted",
                             tr {
-                                th { class: "p-2 text-left font-medium", "Label" }
-                                th { class: "p-2 text-left font-medium", "Credential" }
-                                th { class: "p-2 text-left font-medium", "Status" }
-                                th { class: "p-2 text-left font-medium", "Actions" }
+                                th { "Label" }
+                                th { "Credential" }
+                                th { "Status" }
+                                th { "Actions" }
                             }
                         }
                         tbody {
                             tr {
-                                td { class: "p-2 text-terminal-text", "Laptop passkey" }
-                                td { class: "p-2 font-mono text-xs text-terminal-muted", "credential-1" }
-                                td { class: "p-2 text-lightning-cyan", "enabled" }
+                                td { class: "text-terminal-text", "Laptop passkey" }
+                                td { class: "font-mono text-xs text-terminal-muted", "credential-1" }
                                 td {
-                                    class: "p-2",
-                                    button { class: ACTION_BUTTON_CLASS, "Disable" }
+                                    span { class: STATUS_CONNECTED_CLASS, "enabled" }
+                                }
+                                td {
+                                    button { class: DANGER_BUTTON_CLASS, "Disable" }
                                 }
                             }
                         }
@@ -469,9 +494,9 @@ pub fn SecurityPage() -> Element {
                 }
             }
             div {
-                class: "border border-terminal-border bg-terminal-surface p-4",
+                class: CARD_CLASS,
                 h3 {
-                    class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
+                    class: "mb-3 mt-0 text-lg font-black tracking-tight text-terminal-text",
                     "WebAuthn"
                 }
                 dl {
@@ -492,7 +517,7 @@ pub fn SecurityPage() -> Element {
 pub fn AdminPage() -> Element {
     rsx! {
         section {
-            class: "grid gap-4 p-4",
+            class: "sunbolt-page grid gap-4",
             div {
                 class: "grid grid-cols-1 gap-4 lg:grid-cols-2",
                 AdminTable {
@@ -507,40 +532,38 @@ pub fn AdminPage() -> Element {
                 }
             }
             div {
-                class: "border border-terminal-border bg-terminal-surface p-4",
+                class: CARD_CLASS,
                 div {
-                    class: "mb-3 flex items-center justify-between gap-3",
+                    class: "mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
                     h2 {
-                        class: "m-0 text-sm font-semibold text-terminal-text",
+                        class: "m-0 text-lg font-black tracking-tight text-terminal-text",
                         "Workspace Access"
                     }
                     div {
-                        class: "flex gap-2",
-                        button { class: ACTION_BUTTON_CLASS, "Add member" }
+                        class: "flex flex-wrap gap-2",
+                        button { class: PRIMARY_BUTTON_CLASS, "Add member" }
                         button { class: ACTION_BUTTON_CLASS, "Grant role" }
                     }
                 }
                 div {
-                    class: "overflow-auto border border-terminal-border",
+                    class: TABLE_WRAP_CLASS,
                     table {
-                        class: "w-full border-collapse text-sm",
+                        class: TABLE_CLASS,
                         thead {
-                            class: "bg-terminal-bg text-terminal-muted",
                             tr {
-                                th { class: "p-2 text-left font-medium", "Workspace" }
-                                th { class: "p-2 text-left font-medium", "User" }
-                                th { class: "p-2 text-left font-medium", "Role" }
-                                th { class: "p-2 text-left font-medium", "Actions" }
+                                th { "Workspace" }
+                                th { "User" }
+                                th { "Role" }
+                                th { "Actions" }
                             }
                         }
                         tbody {
                             tr {
-                                td { class: "p-2 text-terminal-text", "Operations" }
-                                td { class: "p-2 text-terminal-text", "admin@example.com" }
-                                td { class: "p-2 text-terminal-text", "Admin" }
+                                td { class: "text-terminal-text", "Operations" }
+                                td { class: "text-terminal-text", "admin@example.com" }
+                                td { class: "text-terminal-text", "Admin" }
                                 td {
-                                    class: "p-2",
-                                    button { class: ACTION_BUTTON_CLASS, "Remove" }
+                                    button { class: DANGER_BUTTON_CLASS, "Remove" }
                                 }
                             }
                         }
@@ -559,20 +582,19 @@ fn AdminTable(
 ) -> Element {
     rsx! {
         div {
-            class: "border border-terminal-border bg-terminal-surface p-4",
+            class: CARD_CLASS,
             h2 {
-                class: "mb-3 mt-0 text-sm font-semibold text-terminal-text",
+                class: "mb-3 mt-0 text-lg font-black tracking-tight text-terminal-text",
                 "{title}"
             }
             div {
-                class: "overflow-auto border border-terminal-border",
+                class: TABLE_WRAP_CLASS,
                 table {
-                    class: "w-full border-collapse text-sm",
+                    class: TABLE_CLASS,
                     thead {
-                        class: "bg-terminal-bg text-terminal-muted",
                         tr {
                             for header in headers {
-                                th { class: "p-2 text-left font-medium", "{header}" }
+                                th { "{header}" }
                             }
                         }
                     }
@@ -580,7 +602,7 @@ fn AdminTable(
                         for row in rows {
                             tr {
                                 for cell in row {
-                                    td { class: "p-2 text-terminal-text", "{cell}" }
+                                    td { class: "text-terminal-text", "{cell}" }
                                 }
                             }
                         }
@@ -1154,8 +1176,8 @@ mod tests {
     use super::{
         app_title, browser_config_script, terminal_bridge_script, AUTH_LOGIN_ENDPOINT,
         AUTH_ME_ENDPOINT, AUTH_TERMINAL_ACCESS_ENDPOINT, CONTROL_PLANE_URL_CONFIG_GLOBAL,
-        STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID, TERMINAL_NODE_INPUT_ID,
-        TERMINAL_WS_CONFIG_GLOBAL, TERMINAL_WS_ENDPOINT, XTERM_SCRIPT_URL, XTERM_STYLESHEET_URL,
+        STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID, TERMINAL_NODE_INPUT_ID, TERMINAL_WS_CONFIG_GLOBAL,
+        TERMINAL_WS_ENDPOINT, XTERM_SCRIPT_URL, XTERM_STYLESHEET_URL,
     };
 
     #[test]
