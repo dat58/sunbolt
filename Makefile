@@ -53,19 +53,32 @@ ui: ui-css
 	dx serve --platform web --package sunbolt-ui --port $(UI_PORT)
 
 agent-token:
-	@COOKIE_JAR="$$(mktemp)"; \
-	trap 'rm -f "$$COOKIE_JAR"' EXIT; \
-	curl -fsS \
+	@set -euo pipefail; \
+	COOKIE_JAR="$$(mktemp)"; \
+	TOKEN_RESPONSE="$$(mktemp)"; \
+	trap 'rm -f "$$COOKIE_JAR" "$$TOKEN_RESPONSE"' EXIT; \
+	if ! curl -fsS $(CONTROL_PLANE_URL)/health >/dev/null; then \
+		echo "control plane is not reachable at $(CONTROL_PLANE_URL); start it with 'make control'" >&2; \
+		exit 1; \
+	fi; \
+	if ! curl -fsS \
 		-c "$$COOKIE_JAR" \
 		-H 'content-type: application/json' \
 		-X POST $(CONTROL_PLANE_URL)/auth/login \
-		-d '{"email":"$(ADMIN_EMAIL)","password":"$(ADMIN_PASSWORD)"}' >/dev/null; \
-	curl -fsS \
+		-d '{"email":"$(ADMIN_EMAIL)","password":"$(ADMIN_PASSWORD)"}' >/dev/null; then \
+		echo "admin login failed for $(ADMIN_EMAIL); check .env or Make variables" >&2; \
+		exit 1; \
+	fi; \
+	if ! curl -fsS \
 		-b "$$COOKIE_JAR" \
 		-H 'content-type: application/json' \
 		-X POST $(CONTROL_PLANE_URL)/nodes/enrollment-tokens \
 		-d '{"expires_in_secs":$(ENROLLMENT_TTL_SECS)}' \
-	| python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])'
+		-o "$$TOKEN_RESPONSE"; then \
+		echo "failed to create an enrollment token from $(CONTROL_PLANE_URL)" >&2; \
+		exit 1; \
+	fi; \
+	python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$$TOKEN_RESPONSE"
 
 agent:
 	@TOKEN="$$( $(MAKE) --no-print-directory agent-token )"; \
