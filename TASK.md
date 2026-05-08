@@ -122,15 +122,15 @@ Goal: move production-critical state to PostgreSQL-backed repositories.
 
 ## Storage Boundaries
 
-- [ ] Define repository traits or service boundaries for users and sessions.
-- [ ] Define repository boundaries for MFA factor state.
-- [ ] Define repository boundaries for RBAC and workspace membership.
-- [ ] Define repository boundaries for nodes.
-- [ ] Define repository boundaries for node credentials.
-- [ ] Define repository boundaries for node heartbeats.
-- [ ] Define repository boundaries for terminal session metadata.
-- [ ] Define repository boundaries for audit events.
-- [ ] Keep live socket/PTY handles in memory only as runtime handles.
+- [x] Define repository traits or service boundaries for users and sessions.
+- [x] Define repository boundaries for MFA factor state.
+- [x] Define repository boundaries for RBAC and workspace membership.
+- [x] Define repository boundaries for nodes.
+- [x] Define repository boundaries for node credentials.
+- [x] Define repository boundaries for node heartbeats.
+- [x] Define repository boundaries for terminal session metadata.
+- [x] Define repository boundaries for audit events.
+- [x] Keep live socket/PTY handles in memory only as runtime handles.
 
 ## Production State Migration
 
