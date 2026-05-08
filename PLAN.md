@@ -1,53 +1,25 @@
 # PLAN.md
 
-# Sunbolt Planning Document
+# Sunbolt Production Plan
 
-Sunbolt is a secure web-based remote terminal platform written primarily in Rust. The product starts as a single-server browser terminal and evolves into an agent-based distributed system for centralized management of many servers.
+Sunbolt is a Rust-first remote terminal and distributed server control platform.
 
-## Product Vision
+The MVP is complete. The next product phase is production hardening: make Sunbolt secure, reliable, observable, responsive across device classes, and ready to operate real agent-managed server terminals.
 
-Sunbolt should let authorized users open secure terminals to managed servers from any modern device:
+All project documentation, code comments, identifiers, commit messages, and user-facing product text must be written in English.
 
-- Laptop
-- Desktop
-- Tablet
-- iPhone or other mobile browser
+## Product Direction
 
-Long-term, Sunbolt should support multiple server nodes connected into a managed network where users can centrally view, manage, audit, and open terminals to any permitted node.
+Sunbolt should let authorized users open and manage secure terminal sessions to controlled servers from modern browsers on:
 
-## Core Goals
+- Mobile phones
+- Tablets
+- Laptops
+- Desktops
 
-1. Browser-based terminal access.
-2. Secure authentication and MFA.
-3. Centralized node/server management.
-4. Distributed agent support.
-5. Strong audit trail.
-6. Permission-controlled terminal access.
-7. Mobile-friendly and desktop-friendly UI.
-8. Rust-first architecture using Dioxus, Tokio, Axum, and SeaORM.
+The system must work in restrictive network environments where managed agent nodes may only have outbound internet access on ports `80` and `443`.
 
-## Non-Goals for the First MVP
-
-The first MVP should not attempt to solve everything.
-
-Do not build these first:
-
-- Full P2P mesh
-- Multi-region routing
-- Terminal recording playback
-- Complex RBAC UI
-- Kubernetes integration
-- Docker exec integration
-- File manager
-- Port forwarding
-- SSH key manager
-- Control plane high availability
-
-Design boundaries should allow these later, but implementation should stay focused.
-
-## Recommended Architecture
-
-Use a centralized control plane first.
+The production architecture is centralized and agent-based:
 
 ```text
 Browser
@@ -56,22 +28,9 @@ Browser
   v
 Sunbolt Control Plane
   |
-  | Local PTY in MVP
-  | Agent protocol in later phase
-  v
-Server Terminal
-```
-
-Later distributed architecture:
-
-```text
-Browser
-  |
-  | HTTPS + WebSocket
-  v
-Sunbolt Control Plane
-  |
-  | Secure agent channel
+  | Sunbolt Native Outbound Agent Channel
+  | Baseline: TLS over TCP/443
+  | Optional: QUIC over UDP/443 when available
   v
 Sunbolt Agent Node
   |
@@ -80,411 +39,527 @@ Sunbolt Agent Node
 Shell
 ```
 
-## Recommended Rust Workspace
+The control plane remains the source of truth for:
 
-Initial structure:
+- Identity
+- Authentication
+- Authorization
+- MFA policy
+- Node enrollment
+- Node revocation
+- Terminal session metadata
+- Audit logs
+- Route and transport policy
 
-```text
-sunbolt/
-├── Cargo.toml
-├── crates/
-│   ├── sunbolt-control/
-│   ├── sunbolt-ui/
-│   ├── sunbolt-terminal/
-│   ├── sunbolt-auth/
-│   ├── sunbolt-storage/
-│   ├── sunbolt-audit/
-│   ├── sunbolt-protocol/
-│   ├── sunbolt-agent/
-│   └── sunbolt-common/
-├── migrations/
-├── AGENTS.md
-├── PLAN.md
-├── TASK.md
-└── README.md
-```
+## Production Goals
 
-This can be simplified during the first commit if needed. The important thing is to avoid mixing UI, terminal, auth, storage, and protocol logic into one unstructured module.
+1. Secure terminal access with server-side authorization on every operation.
+2. Outbound-only agent connectivity that works through restrictive firewalls.
+3. Stable terminal sessions that survive browser navigation and short disconnects.
+4. Multi-tab terminal workspace with clear detach, close, and terminate semantics.
+5. Durable production state in PostgreSQL.
+6. Clear structured logging and audit events across system interactions.
+7. Responsive and adaptive UI for mobile, tablet, laptop, and desktop.
+8. Clean Rust crate/module structure with minimal duplication.
+9. Production deployment guidance with explicit development and production modes.
+10. Documentation for architecture, operations, transport, terminal lifecycle, and security.
 
-## Major Components
+## Runtime Modes
 
-## 1. Web UI
+Sunbolt should have exactly two runtime modes:
 
-Recommended stack:
+- `development`
+- `production`
 
-- Dioxus Web
-- Tailwind or CSS modules if preferred
-- xterm.js for terminal rendering
+Development mode may support local bootstrap credentials, permissive local origins, and in-memory scaffolding while features are being built.
 
-Main screens:
+Production mode must require explicit configuration and durable storage. Production must reject development-only shortcuts.
 
-- Login
-- MFA challenge
-- Dashboard
-- Nodes / Servers
-- Terminal Workspace
-- Terminal Sessions
-- Access History
-- Audit Logs
-- Settings / Security
+Preview and test environments should run as either development-like or production-like deployments using environment-specific configuration, not a separate application mode.
 
-Design direction:
+## Current Baseline
 
-- Product name: Sunbolt
-- Theme: sunlight + lightning
-- Default terminal area should work well in dark mode
+The repository already contains:
 
-## 2. Control Plane
+- Rust workspace with control, UI, agent, auth, terminal, protocol, audit, storage, and common crates.
+- Local PTY terminal support.
+- Browser WebSocket terminal protocol.
+- Dioxus web UI with xterm.js integration.
+- Initial auth, step-up MFA, RBAC, node enrollment, audit, and terminal lifecycle foundations.
+- Agent node MVP concepts.
+- Some detach/reattach protocol support.
+- Production deployment notes and migration scaffolding.
 
-Recommended stack:
+The production phase must turn this MVP baseline into a durable, maintainable system. Existing in-memory registries and placeholder UI flows should be replaced or isolated behind production-ready boundaries.
 
-- Axum
-- Tokio
-- tower middleware
-- WebSocket support
-- SeaORM for database access
+## Target Architecture
 
-Responsibilities:
+### Control Plane
 
-- Serve API
-- Serve or integrate with Dioxus frontend
-- Authenticate users
-- Authorize actions
-- Manage sessions
-- Manage nodes
-- Manage terminal sessions
-- Route terminal streams
-- Write audit logs
-- Store access history
+The control plane should be split into explicit modules:
 
-## 3. Terminal Core
+- `config`: environment loading and runtime mode validation
+- `error`: API and domain errors
+- `routes`: Axum route definitions and handlers
+- `state`: shared application state
+- `auth`: request/session extraction and authorization checks
+- `terminal`: browser terminal WebSocket orchestration
+- `agent`: agent enrollment, connection ownership, heartbeat, commands
+- `node`: node management and revocation
+- `audit`: audit writer integration and event mapping
+- `transport`: agent transport server implementations
+- `repositories`: storage-backed control-plane data access
 
-Responsibilities:
+Large implementation should not remain concentrated in `sunbolt-control/src/lib.rs`.
 
-- Spawn PTY
-- Stream input/output
-- Handle resize events
-- Handle process exit
-- Handle WebSocket disconnect
-- Track session state
-- Enforce idle timeout
+### Storage
 
-Initial session states:
+PostgreSQL should be mandatory for production.
 
-```text
-Created -> Starting -> Active -> Closing -> Closed -> Failed
-```
+Durable production state should include:
 
-Later session states:
+- Users
+- Sessions
+- Recent MFA timestamps or equivalent challenge state
+- MFA factors
+- RBAC roles and permissions
+- Workspaces and memberships
+- Nodes
+- Node credentials
+- Node heartbeats
+- Node revocations
+- Agent connection metadata
+- Terminal session metadata
+- Terminal detach/reattach state
+- Audit logs
+- Route health and ownership leases where needed
 
-```text
-Detached -> Reconnecting -> Reattached
-```
+In-memory structures may cache live sockets, PTY handles, broadcast channels, output buffers, and short-lived runtime handles. They must not be the durable source of truth for production.
 
-## 4. Auth and MFA
+### Terminal Lifecycle
 
-Auth should be extensible from the start.
+Terminal lifetime must be independent from browser page lifetime.
 
-Suggested abstraction:
+Browser page navigation, refresh, route changes, tab changes, mobile app backgrounding, and short WebSocket disconnects should detach the browser from the terminal session. They must not close the PTY.
 
-```rust
-pub trait AuthFactor {
-    fn factor_type(&self) -> FactorType;
-    async fn begin_challenge(&self, ctx: &AuthContext) -> Result<Challenge, AuthError>;
-    async fn verify_challenge(&self, ctx: &AuthContext, response: FactorResponse) -> Result<FactorResult, AuthError>;
-}
-```
-
-Initial auth phases:
-
-1. Basic local dev login.
-2. Password-based login with secure password hashing.
-3. TOTP factor.
-4. Recovery codes.
-5. WebAuthn/passkeys.
-6. Step-up MFA for terminal access.
-
-## 5. Authorization
-
-Use resource-oriented permissions.
-
-Example permissions:
+The control plane and agent should model terminal states explicitly:
 
 ```text
-node.view
-node.register
-node.revoke
-terminal.open
-terminal.close
-terminal.view_history
-terminal.recording.view
-audit.view
-user.manage
-role.manage
+Created -> Starting -> Active -> Detached -> Reattaching -> Active
+Active -> Terminating -> Terminated
+Active -> Failed
+Detached -> Expired
 ```
 
-Initial MVP may use a simple admin/user role, but the data model should not block later workspace-level RBAC.
+The exact enum may differ, but the implementation must distinguish:
 
-## 6. Storage
+- UI tab closed
+- Browser WebSocket disconnected
+- User detached
+- User explicitly terminated the terminal
+- PTY process exited
+- Backend policy closed the terminal
+- Node disconnected
+- Node revoked
 
-Use PostgreSQL with SeaORM migrations.
+Reattach must verify:
 
-Initial tables:
+- Authenticated browser session
+- User identity
+- Workspace membership
+- `terminal.reattach` or equivalent permission
+- Terminal ownership or delegated access
+- Session state allows reattach
+- Node is still trusted and not revoked
+
+The UI may use a reconnect token as an implementation detail, but production authorization must not depend only on a bearer reconnect token.
+
+### Multi-Tab Terminal Workspace
+
+The terminal workspace should support multiple terminal tabs.
+
+Required semantics:
+
+- Open new terminal tab.
+- Switch active terminal tab.
+- Rename or display useful terminal labels.
+- Close UI tab without killing PTY.
+- Detach terminal session.
+- Reattach existing terminal session.
+- Explicitly terminate terminal session.
+- List active and detached sessions after page reload.
+- Preserve terminal identity across route changes.
+
+For mobile, terminal tabs should collapse into a compact session switcher, dropdown, segmented control, or bottom sheet.
+
+### Agent Transport
+
+Sunbolt should own the agent-control-plane transport. The core product must not depend on a third-party tunnel provider.
+
+Agents initiate outbound connections to the control plane.
+
+Production transport strategy:
+
+1. Implement a transport abstraction.
+2. Keep a development WebSocket transport for local iteration.
+3. Implement a production baseline over TLS/TCP/443 using WebSocket or HTTP/2.
+4. Add optional QUIC over UDP/443 as a fast path when the network allows it.
+5. Add a restrictive-network fallback if required, such as long-poll or request/response control messages.
+
+QUIC is valuable for multiplexed streams, connection migration, and transport-level flow control, but it cannot be the only production path because UDP is often blocked.
+
+The transport layer should support:
+
+- Protocol version negotiation
+- Agent identity authentication
+- Heartbeat
+- Liveness timeout
+- Backoff and reconnect
+- Resume after transient disconnect
+- Per-terminal stream routing
+- Backpressure
+- Message IDs
+- Terminal output sequence numbers
+- Transport metrics
+- Structured logs
+
+### Agent Identity
+
+Enrollment starts with a one-time token.
+
+After enrollment, the agent should use durable node identity material:
+
+- Node ID
+- Credential fingerprint
+- Private key or certificate material
+- Expiration metadata
+- Rotation metadata
+- Revocation state
+
+Production should support or plan for:
+
+- mTLS or equivalent authenticated handshake
+- Credential rotation
+- Node revocation
+- Agent version tracking
+- Heartbeat and health status
+- Forced session shutdown on revocation
+- Clear audit events for each identity lifecycle action
+
+### Audit and Observability
+
+Sunbolt should provide both auditability and operational visibility.
+
+Audit logs answer: who did what, to which resource, when, and whether it was allowed.
+
+Structured logs answer: how components interacted and why operations succeeded, retried, degraded, or failed.
+
+Use `tracing` consistently with fields such as:
+
+- `request_id`
+- `actor_id`
+- `actor_email`
+- `workspace_id`
+- `node_id`
+- `session_id`
+- `transport_id`
+- `route_id`
+
+Audit events should include:
+
+- `user.login.success`
+- `user.login.failed`
+- `user.logout`
+- `user.mfa.challenge`
+- `user.mfa.success`
+- `terminal.opened`
+- `terminal.detached`
+- `terminal.reattached`
+- `terminal.terminated`
+- `terminal.closed`
+- `terminal.failed`
+- `agent.connected`
+- `agent.disconnected`
+- `agent.transport.negotiated`
+- `node.enrolled`
+- `node.revoked`
+- `node.credential.rotated`
+- `permission.changed`
+- `route.selected`
+- `route.failed`
+
+Secrets must be redacted from logs and audit messages.
+
+### UI Architecture
+
+Dioxus should be organized around pages, reusable components, and shared client/state layers.
+
+Recommended UI structure:
 
 ```text
-users
-sessions
-audit_logs
-terminal_sessions
+sunbolt-ui/
+  src/
+    app.rs
+    routes.rs
+    api/
+    components/
+    layouts/
+    pages/
+    terminal/
+    state/
+    theme/
 ```
 
-Phase 2 tables:
+The exact structure may evolve, but the responsibilities should stay separate:
 
-```text
-nodes
-node_credentials
-node_heartbeats
-enrollment_tokens
-```
+- Pages compose workflows.
+- Components render reusable controls.
+- API clients handle HTTP/WebSocket calls.
+- Terminal state is shared across device layouts.
+- Layouts adapt to desktop, tablet, and mobile.
+- Styles are centralized and reused.
 
-Phase 3 tables:
+Avoid duplicating buttons, tables, badges, forms, modals, sheets, status indicators, and API calls.
 
-```text
-auth_factors
-recovery_codes
-trusted_devices
-workspaces
-workspace_members
-roles
-permissions
-role_permissions
-```
+### Responsive and Adaptive UI
 
-## 7. Agent Node
+Sunbolt must be responsive by default and adaptive where workflows change by device class.
 
-The agent is a daemon installed on managed servers.
+Desktop and laptop:
 
-Responsibilities:
+- Full navigation.
+- Dense data tables.
+- Multi-tab terminal workspace.
+- Terminal viewport should dominate terminal screens.
+- Filtering, search, and pagination should be efficient.
 
-- Enroll with control plane
-- Maintain heartbeat
-- Hold a secure outbound connection to control plane
-- Start local PTY sessions
-- Stream terminal input/output
-- Report terminal exit status
-- Support certificate/key rotation later
+Tablet:
 
-Do not build the agent before the local terminal MVP works.
+- Two-pane views where width allows.
+- Compact terminal controls.
+- Node list and terminal/detail split views.
+- Tables may become compact rows.
 
-## 8. Node Communication
+Mobile:
 
-Preferred direction:
+- Terminal-first full-screen workspace.
+- Bottom navigation or compact top navigation.
+- Terminal session switcher instead of wide tabs.
+- Node selector and session actions in bottom sheets.
+- Dense list rows instead of wide tables.
+- Login and MFA flows must remain usable when the keyboard is open.
 
-- MVP: no remote agent yet; local PTY only
-- Phase 2: agent outbound WebSocket to control plane
-- Phase 3: mTLS or signed node identity
-- Phase 4: certificate rotation and revocation
-- Phase 5: optional direct tunnel or mesh routing
+Mobile terminal accessory controls should include:
 
-## 9. Audit System
+- `Ctrl`
+- `Esc`
+- `Tab`
+- Arrow keys
+- Paste
+- Reconnect
+- Detach
+- Terminate session
 
-Audit logs should be append-only from the application perspective.
+Baseline validation viewports:
 
-Events to record:
+- iPhone 11 Pro: `375x812`
+- iPad 11 Pro portrait: `834x1194`
+- iPad 11 Pro landscape: `1194x834`
+- Laptop: `1366x768`
+- Desktop: `1920x1080`
 
-```text
-user.login.success
-user.login.failed
-user.logout
-user.mfa.challenge
-terminal.opened
-terminal.closed
-terminal.failed
-node.enrolled
-node.revoked
-permission.changed
-```
+### Security Hardening
 
-Later events:
+Production must enforce:
 
-```text
-terminal.recording.started
-terminal.recording.stopped
-node.cert.rotated
-agent.upgraded
-```
-
-## 10. Security Model
-
-Client to server:
-
-- HTTPS only in production
+- HTTPS at the public edge
 - Secure HttpOnly cookies
 - SameSite cookie policy
-- CSRF protection where relevant
+- CSRF protection for state-changing HTTP routes
 - WebSocket origin validation
-- Short-lived terminal connection token
+- Strong session expiration
+- Step-up MFA policy for terminal open
+- Server-side authorization on every route and WebSocket command
+- Rate limits for login, MFA, enrollment, and terminal creation
+- Node revocation enforcement
+- Secret redaction in logs
+- No development bootstrap admin
+- No auth tokens in browser local storage
+- No hidden production credentials
 
-Control plane to agent:
+### Documentation
 
-- One-time enrollment token
-- Node identity
-- mTLS or equivalent secure channel
-- Certificate rotation
-- Node revocation
+Documentation should evolve with the production system.
 
-Data security:
+Required docs:
 
-- No plaintext passwords
-- No hard-coded secrets
-- No long-lived terminal tokens
-- No auth tokens in localStorage
-- Encrypt sensitive secrets at rest where needed
+- Local development
+- Production deployment
+- Security model
+- Agent enrollment
+- Agent transport
+- Terminal lifecycle
+- Terminal reconnect/reattach
+- UI architecture
+- Audit event taxonomy
+- Backup and restore
+- Migration notes
 
-## Development Phases
+## Production Phase Roadmap
 
-## Phase 0: Project Foundation
+### Phase 8.1: Documentation and Architecture Reset
 
-Goal: create a clean Rust workspace and basic app skeleton.
-
-Deliverables:
-
-- Cargo workspace
-- Basic Dioxus web app
-- Basic Axum backend
-- Shared config
-- Health endpoint
-- Basic error handling
-- Initial README
-- CI-ready commands
-
-Validation:
-
-```bash
-cargo test
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-## Phase 1: Local Web Terminal MVP
-
-Goal: open a terminal on the same server running Sunbolt.
-
-Flow:
-
-```text
-Browser -> WebSocket -> Control Plane -> Local PTY
-```
+Goal: make the production direction explicit and remove old MVP-first planning from the source of truth.
 
 Deliverables:
 
-- Terminal page
-- xterm.js integration
-- WebSocket endpoint
-- Local PTY spawn
-- Input/output streaming
-- Resize support
-- Close support
-- Terminal session table
-- Basic audit log
+- Rewritten `AGENTS.md`
+- Rewritten `PLAN.md`
+- Rewritten `TASK.md`
+- Clear production principles
+- Clear transport direction
+- Clear responsive/adaptive UI direction
 
-## Phase 2: Basic Auth and Access History
+### Phase 8.2: Control-Plane Structure Cleanup
 
-Goal: users can log in and terminal access is tracked.
+Goal: split large control-plane implementation into maintainable modules without changing behavior.
 
 Deliverables:
 
-- User model
-- Login/logout
-- Secure session cookie
-- Access history page
-- Audit events for login and terminal access
-- Basic role check for terminal access
+- Route modules
+- Terminal session modules
+- Agent/node modules
+- Config/error/state modules
+- Focused tests preserved
+- No unrelated behavior changes
 
-## Phase 3: Agent Node MVP
+### Phase 8.3: Durable Production State
 
-Goal: open a terminal on another server running Sunbolt Agent.
-
-Flow:
-
-```text
-Browser -> Control Plane -> Agent -> Local PTY
-```
+Goal: move production-critical state out of process memory.
 
 Deliverables:
 
-- Agent binary
-- Enrollment token
-- Node registration
-- Node heartbeat
-- Node list page
-- Open terminal on selected node
-- Node offline handling
+- Storage-backed auth/session repository boundaries
+- Storage-backed node and credential repositories
+- Storage-backed terminal session metadata
+- Storage-backed audit append path
+- Migration coverage
+- Production config validation
 
-## Phase 4: MFA and RBAC
+### Phase 8.4: Terminal Reattach and Multi-Tab Workspace
 
-Goal: make terminal access safer and more granular.
-
-Deliverables:
-
-- Auth factor abstraction
-- TOTP support
-- Recovery codes
-- Step-up MFA before opening terminal
-- Workspace model
-- Role/permission model
-- Basic admin UI for user/node access
-
-## Phase 5: Hardening
-
-Goal: make the system safer and more reliable.
+Goal: make terminal sessions durable across browser navigation and usable as a multi-tab workspace.
 
 Deliverables:
 
-- WebSocket backpressure handling
-- Terminal reconnect/detach
-- Idle timeout
-- Session limits
-- Node revocation
-- Audit hash chain
-- Configurable security policy
-- Production deployment docs
+- Active session listing API
+- Detached session listing API
+- Reattach flow for local and remote sessions
+- Explicit terminate endpoint/message
+- UI terminal tabs/session switcher
+- Mobile terminal session switcher
+- Tests for detach, reattach, and terminate semantics
 
-## Phase 6: Distributed Expansion
+### Phase 8.5: Sunbolt Native Agent Transport
 
-Goal: support larger distributed deployments.
+Goal: build an outbound-only production transport foundation.
 
 Deliverables:
 
-- Multi-node routing abstraction
-- Relay node support
-- Direct tunnel exploration
-- Optional WireGuard/QUIC transport research
-- Control plane HA planning
-- Agent auto-update planning
+- Agent transport trait
+- Control-plane transport registry
+- TCP/443 TLS transport baseline using WebSocket or HTTP/2
+- Transport negotiation
+- Heartbeat and reconnect
+- Backpressure policy
+- Message IDs and terminal output sequence numbers
+- QUIC design spike and optional implementation plan
 
-## Open Technical Questions
+### Phase 8.6: Agent Identity and Revocation
 
-1. Which PTY crate should be used for the first implementation?
-2. Should the first UI integrate xterm.js directly or through a small wrapper component?
-3. Should backend and frontend be served from one binary during MVP?
-4. Should sessions be stored server-side or as signed encrypted cookies?
-5. Which password hashing crate and parameters should be used?
-6. Should SeaORM migrations live inside a dedicated crate or root `migration/` directory?
-7. Should agent protocol use JSON first for debugability, then binary later?
-8. How strict should terminal recording be for the first auditable version?
+Goal: make enrolled agents trustworthy beyond one-time token bootstrap.
 
-## Recommended First Implementation Path
+Deliverables:
 
-1. Create Rust workspace.
-2. Create backend health endpoint.
-3. Create Dioxus shell UI.
-4. Create terminal page placeholder.
-5. Add WebSocket endpoint.
-6. Spawn local PTY.
-7. Connect xterm.js to WebSocket.
-8. Add resize support.
-9. Add session lifecycle tracking.
-10. Add minimal database schema.
-11. Add audit logging.
-12. Add basic login.
-13. Add first node/agent work only after local terminal is stable.
+- Durable node identity
+- Credential fingerprinting
+- Rotation model
+- Revocation enforcement
+- Audit events
+- Agent reconnect with identity verification
+
+### Phase 8.7: Responsive Production UI
+
+Goal: redesign the UI into reusable pages/components that work across device classes.
+
+Deliverables:
+
+- Shared design system components
+- Desktop/laptop layout
+- Tablet adaptive layout
+- Mobile terminal-first layout
+- Bottom sheets or compact controls for mobile workflows
+- Terminal accessory toolbar for mobile
+- No duplicated page/control logic
+- Viewport validation across required device sizes
+
+### Phase 8.8: Observability and Audit
+
+Goal: make system interactions traceable and audit-ready.
+
+Deliverables:
+
+- Consistent tracing spans
+- Correlation IDs
+- Audit event taxonomy
+- Secret redaction
+- Agent transport logs
+- Terminal lifecycle logs
+- Audit export and chain verification path
+
+### Phase 8.9: Security Hardening
+
+Goal: remove production shortcuts and enforce security policy.
+
+Deliverables:
+
+- Runtime mode validation
+- Production config validation
+- CSRF enforcement
+- Origin validation hardening
+- Rate limit review
+- Secure cookie review
+- MFA policy review
+- Authorization tests for routes and WebSocket commands
+- Node revocation tests
+
+### Phase 8.10: Production Validation
+
+Goal: establish the release gate for production deployment.
+
+Deliverables:
+
+- `cargo test` passing
+- `cargo clippy --all-targets --all-features -- -D warnings` passing
+- `cargo fmt --all -- --check` passing
+- Migration verification
+- Basic load testing for terminal streams
+- Agent reconnect testing
+- Browser/device viewport testing
+- Deployment runbook updated
+
+## Success Criteria
+
+The production phase is complete when:
+
+- A production deployment can run without development shortcuts.
+- Agents connect outbound through TCP/443.
+- QUIC is available as an optional fast path or has a documented implementation spike.
+- Terminal sessions survive browser route changes and short disconnects.
+- Users can manage multiple terminal tabs/sessions.
+- Mobile, tablet, laptop, and desktop layouts are usable.
+- Audit logs and structured traces clearly describe system interactions.
+- Production-critical state is durable.
+- Code modules are split by responsibility.
+- Documentation matches the implemented behavior.
+- Required checks pass before release.

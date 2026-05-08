@@ -1,8 +1,10 @@
 # TASK.md
 
-# Sunbolt Task List
+# Sunbolt Production Task List
 
-This file tracks implementation tasks for Sunbolt.
+This file tracks the next production phase for Sunbolt.
+
+All task descriptions, documentation, code comments, identifiers, commit messages, and user-facing product text must be written in English.
 
 Status markers:
 
@@ -13,447 +15,578 @@ Status markers:
 
 ## Current Priority
 
-Build the local web terminal MVP before implementing distributed agent nodes.
+The MVP is complete. The current priority is to harden Sunbolt into a production-ready remote terminal and distributed server control product.
 
-Target first milestone:
+Target production milestone:
 
 ```text
-A user can open a browser, log in locally or through a temporary dev auth flow, open a terminal on the server running Sunbolt, type commands, see output, resize the terminal, and close the session.
+An authenticated and authorized user can open multiple browser terminal sessions
+to managed agent nodes, navigate away or switch pages without killing PTYs,
+reattach to active sessions, and rely on clear audit logs, stable outbound agent
+connectivity, secure production configuration, and responsive UI across mobile,
+tablet, laptop, and desktop devices.
 ```
 
----
+Target production agent flow:
 
-# Phase 0: Project Foundation
+```text
+Browser -> Control Plane -> Sunbolt Native Outbound Agent Channel -> Agent Node -> PTY
+```
 
-## Repository Setup
-
-- [x] Rename or initialize the project as `sunbolt`.
-- [x] Create a Rust workspace.
-- [x] Add root `Cargo.toml` workspace members.
-- [x] Add `README.md` with the Sunbolt product description.
-- [x] Add `AGENTS.md`, `PLAN.md`, and `TASK.md`.
-- [x] Add `.gitignore` for Rust, Dioxus, local env files, and build artifacts.
-- [x] Add `.env.example` for local development config.
-
-## Workspace Crates / Modules
-
-- [x] Create `crates/sunbolt-common`.
-- [x] Create `crates/sunbolt-control`.
-- [x] Create `crates/sunbolt-ui`.
-- [x] Create `crates/sunbolt-terminal`.
-- [x] Create `crates/sunbolt-auth`.
-- [x] Create `crates/sunbolt-storage`.
-- [x] Create `crates/sunbolt-audit`.
-- [x] Create `crates/sunbolt-protocol`.
-- [x] Defer `crates/sunbolt-agent` until Phase 3 unless needed earlier.
-
-## Tooling
-
-- [x] Ensure `cargo test` runs successfully.
-- [x] Ensure `cargo clippy --all-targets --all-features -- -D warnings` runs successfully.
-- [x] Add formatting guidance using `cargo fmt`.
-- [x] Add Tailwind CSS tooling for web UI design.
-- [x] Upgrade Axum to 0.8.
-- [ ] Add basic CI workflow if GitHub Actions is used.
-- [ ] Add local development command documentation.
-
-## Backend Skeleton
-
-- [x] Add Axum backend binary or library entrypoint.
-- [x] Add Tokio runtime.
-- [x] Add `/health` endpoint.
-- [x] Add structured error type.
-- [x] Add request tracing/logging.
-- [x] Add config loading from environment variables.
-
-## UI Skeleton
-
-- [ ] Add Dioxus web app shell.
-- [ ] Add base layout.
-- [x] Add Sunbolt theme colors.
-- [ ] Add placeholder dashboard page.
-- [ ] Add placeholder terminal page.
-- [ ] Add placeholder nodes page.
-- [ ] Add placeholder access history page.
+Agent nodes must not require inbound firewall access. Production baseline transport must work over outbound TCP/443. QUIC over UDP/443 may be added as an optional fast path, but it must not be the only production transport.
 
 ---
 
-# Phase 1: Local Web Terminal MVP
+# MVP Baseline
 
-## Terminal Backend
+The previous MVP phases are considered complete background for this production phase.
 
-- [x] Choose PTY crate for local terminal spawning.
-- [x] Implement `TerminalSessionId` type.
-- [x] Implement terminal session states:
-  - [x] `Created`
-  - [x] `Starting`
-  - [x] `Active`
-  - [x] `Closing`
-  - [x] `Closed`
-  - [x] `Failed`
-- [x] Implement local PTY spawn.
-- [x] Implement terminal input write.
-- [x] Implement terminal output read.
-- [x] Implement terminal resize.
-- [x] Implement terminal close.
-- [x] Implement terminal process exit handling.
-- [x] Add unit tests for session state transitions.
+- [x] Rust workspace established.
+- [x] Control-plane Axum foundation established.
+- [x] Dioxus UI foundation established.
+- [x] Local PTY terminal MVP established.
+- [x] Browser WebSocket terminal protocol established.
+- [x] Initial auth, MFA, RBAC, audit, and node concepts established.
+- [x] Initial agent MVP concepts established.
+- [x] Initial hardening and deployment notes established.
+- [x] Initial terminal UI integration established.
 
-## WebSocket Terminal Stream
-
-- [x] Add WebSocket endpoint for terminal connections.
-- [x] Define browser-to-server terminal messages:
-  - [x] `Start`
-  - [x] `Input`
-  - [x] `Resize`
-  - [x] `Close`
-  - [x] `Ping`
-- [x] Define server-to-browser terminal messages:
-  - [x] `Started`
-  - [x] `Output`
-  - [x] `Exited`
-  - [x] `Error`
-  - [x] `Pong`
-- [x] Implement terminal input forwarding.
-- [x] Implement terminal output forwarding.
-- [x] Handle browser disconnect.
-- [x] Handle backend PTY failure.
-- [x] Add backpressure strategy or document temporary behavior.
-
-## Terminal UI
-
-- [x] Integrate xterm.js or chosen terminal emulator.
-- [x] Create Dioxus terminal component wrapper.
-- [x] Connect terminal input to WebSocket.
-- [x] Render terminal output from WebSocket.
-- [x] Send resize events to backend.
-- [x] Add terminal connection status indicator.
-- [x] Add close terminal button.
-- [x] Add reconnect placeholder UI.
-- [ ] Test on desktop browser.
-- [ ] Test on iPhone/mobile browser.
-
-## Session Tracking
-
-- [x] Track active sessions in memory.
-- [x] Add max sessions per process config.
-- [x] Add idle timeout config.
-- [x] Add graceful cleanup on close.
-- [x] Add cleanup on backend shutdown.
+Open MVP-era gaps must now be handled through the production tasks below, not by extending the old MVP roadmap.
 
 ---
 
-# Phase 2: Storage, Auth, and Audit
+# Phase 8.1: Documentation and Architecture Reset
 
-## Database
+Goal: replace the MVP-first planning documents with production-first guidance.
 
-- [x] Add PostgreSQL config.
-- [x] Add SeaORM dependency.
-- [x] Add migration setup.
-- [x] Create `users` table.
-- [x] Create `sessions` table.
-- [x] Create `terminal_sessions` table.
-- [x] Create `audit_logs` table.
-- [x] Add storage crate APIs.
+## Planning Documents
+
+- [x] Rewrite `AGENTS.md` for the production phase.
+- [x] Rewrite `PLAN.md` for the production phase.
+- [x] Rewrite `TASK.md` for the production phase.
+- [x] Document that all docs and code-facing text must be written in English.
+- [x] Document exactly two runtime modes: `development` and `production`.
+- [x] Document that Sunbolt owns the agent-control-plane transport.
+- [x] Remove third-party tunnel dependency from the core transport plan.
+- [x] Document outbound-only agent connectivity.
+- [x] Document TCP/443 as the baseline production agent transport.
+- [x] Document QUIC as an optional fast path, not a required-only path.
+- [x] Document responsive and adaptive UI requirements.
+- [x] Preserve mandatory git workflow guidance.
+- [x] Preserve conventional commit style guidance.
+
+## Follow-up Documentation
+
+- [ ] Update `README.md` to describe the production direction.
+- [ ] Update `docs/local-development.md` to distinguish development-only shortcuts from production behavior.
+- [ ] Update `docs/deployment.md` for the two runtime modes.
+- [ ] Add `docs/security-model.md`.
+- [ ] Add `docs/terminal-lifecycle.md`.
+- [ ] Add `docs/agent-transport.md`.
+- [ ] Add `docs/ui-architecture.md`.
+- [ ] Add `docs/audit-events.md`.
+
+---
+
+# Phase 8.2: Control-Plane Module Cleanup
+
+Goal: split large control-plane implementation into maintainable modules without changing behavior.
+
+## Module Structure
+
+- [ ] Split `sunbolt-control` config loading into `config.rs`.
+- [ ] Split control-plane error types into `error.rs`.
+- [ ] Split route construction into `routes/`.
+- [ ] Split application state into `state.rs`.
+- [ ] Split auth middleware and request extraction into `auth.rs` or `routes/auth.rs`.
+- [ ] Split terminal WebSocket orchestration into `terminal/`.
+- [ ] Split terminal session registry logic into `terminal/session_registry.rs`.
+- [ ] Split agent enrollment and heartbeat logic into `agent/`.
+- [ ] Split node management and revocation logic into `node/`.
+- [ ] Split audit integration helpers into `audit.rs`.
+- [ ] Keep `lib.rs` focused on module declarations and public re-exports.
+
+## Behavior Preservation
+
+- [ ] Preserve existing route paths.
+- [ ] Preserve existing protocol messages.
+- [ ] Preserve existing tests during the refactor.
+- [ ] Add focused module-level tests where code moves reveal untested behavior.
+- [ ] Avoid unrelated behavior changes in the refactor commit.
+
+---
+
+# Phase 8.3: Persistent Production State
+
+Goal: move production-critical state to PostgreSQL-backed repositories.
+
+## Storage Boundaries
+
+- [ ] Define repository traits or service boundaries for users and sessions.
+- [ ] Define repository boundaries for MFA factor state.
+- [ ] Define repository boundaries for RBAC and workspace membership.
+- [ ] Define repository boundaries for nodes.
+- [ ] Define repository boundaries for node credentials.
+- [ ] Define repository boundaries for node heartbeats.
+- [ ] Define repository boundaries for terminal session metadata.
+- [ ] Define repository boundaries for audit events.
+- [ ] Keep live socket/PTY handles in memory only as runtime handles.
+
+## Production State Migration
+
+- [ ] Ensure users are read from durable storage in production.
+- [ ] Ensure auth sessions are durable or backed by a production-grade session store.
+- [ ] Ensure recent MFA state is durable or recoverable.
+- [ ] Ensure nodes and credentials are durable.
+- [ ] Ensure terminal session metadata is durable.
+- [ ] Ensure audit logs are durable and append-only from the application perspective.
+- [ ] Ensure startup fails clearly in production when required storage config is missing.
+
+## Tests
+
+- [ ] Add repository unit tests using mockable boundaries where practical.
+- [ ] Add migration tests where practical.
+- [ ] Add production config validation tests.
+- [ ] Add tests proving production mode does not rely on development bootstrap admin.
+
+---
+
+# Phase 8.4: Terminal Session Persistence, Reattach, and Multi-Tab Workspace
+
+Goal: make terminal sessions durable across browser navigation and usable through a multi-tab workspace.
+
+## Terminal Lifecycle Semantics
+
+- [ ] Define explicit terminal lifecycle states for production.
+- [ ] Distinguish UI tab close from PTY termination.
+- [ ] Distinguish browser WebSocket disconnect from PTY termination.
+- [ ] Distinguish detach from terminate.
+- [ ] Distinguish PTY process exit from backend policy close.
+- [ ] Add audit events for terminal detach.
+- [ ] Add audit events for terminal reattach.
+- [ ] Add audit events for explicit terminal terminate.
+
+## Backend APIs and Protocol
+
+- [ ] Add API to list active terminal sessions for the authenticated user.
+- [ ] Add API to list detached terminal sessions for the authenticated user.
+- [ ] Add API or protocol command to explicitly terminate a terminal session.
+- [ ] Ensure reattach verifies authenticated user identity.
+- [ ] Ensure reattach verifies workspace membership and terminal permission.
+- [ ] Ensure reattach rejects revoked nodes.
+- [ ] Add terminal output sequence numbers.
+- [ ] Add a short replay buffer for recent terminal output where practical.
+- [ ] Add clear expired-session errors.
+
+## Local Terminal Reattach
+
+- [ ] Keep local PTY alive when browser route changes.
+- [ ] Reattach local terminal by session identity after route changes.
+- [ ] Reattach local terminal after short WebSocket disconnect.
+- [ ] Ensure idle timeout still applies to detached sessions.
+- [ ] Ensure absolute max duration still applies to detached sessions.
+
+## Remote Terminal Reattach
+
+- [ ] Keep remote agent PTY alive when browser route changes.
+- [ ] Reattach remote terminal through control plane after route changes.
+- [ ] Reattach remote terminal after short browser disconnect.
+- [ ] Handle agent disconnect during detached terminal state.
+- [ ] Handle agent reconnect and terminal resume where supported.
+- [ ] Return clear error when remote terminal cannot be recovered.
+
+## Multi-Tab UI
+
+- [ ] Add terminal workspace tab model.
+- [ ] Add open new terminal action.
+- [ ] Add switch terminal tab action.
+- [ ] Add close UI tab action that does not kill PTY by default.
+- [ ] Add explicit terminate terminal action.
+- [ ] Add detached session list.
+- [ ] Add reattach session action.
+- [ ] Preserve active session identity across route changes.
+- [ ] Restore session list after browser reload.
+
+## Tests
+
+- [ ] Test browser detach does not close PTY.
+- [ ] Test explicit terminate closes PTY.
+- [ ] Test reattach succeeds for authorized owner.
+- [ ] Test reattach fails for unauthorized user.
+- [ ] Test reattach fails for revoked node.
+- [ ] Test multiple sessions per user follow configured limits.
+- [ ] Test close UI tab and terminate session have different effects.
+
+---
+
+# Phase 8.5: Sunbolt Native Outbound Agent Transport
+
+Goal: implement a production transport foundation owned by Sunbolt.
+
+## Transport Abstraction
+
+- [ ] Define an `AgentTransport` trait or equivalent boundary.
+- [ ] Define transport connection lifecycle states.
+- [ ] Define transport error types.
+- [ ] Define transport metrics fields.
+- [ ] Define transport negotiation messages.
+- [ ] Define transport heartbeat messages.
+- [ ] Define transport reconnect behavior.
+- [ ] Define message ID requirements.
+- [ ] Define terminal stream sequence number requirements.
+
+## Baseline TCP/443 Transport
+
+- [ ] Implement production baseline over TLS/TCP/443 using WebSocket or HTTP/2.
+- [ ] Ensure agent initiates the connection outbound.
+- [ ] Ensure no inbound access to the agent node is required.
+- [ ] Add heartbeat from agent to control plane.
+- [ ] Add control-plane liveness timeout.
+- [ ] Add agent reconnect with backoff.
+- [ ] Add control-plane detection for duplicate node connections.
+- [ ] Add transport negotiation audit event.
+- [ ] Add agent connected audit event.
+- [ ] Add agent disconnected audit event.
+
+## Restrictive Network Fallback
+
+- [ ] Evaluate whether long-poll fallback is required.
+- [ ] Document fallback tradeoffs if not implemented immediately.
+- [ ] Ensure terminal UX reports degraded transport clearly when fallback is active.
+
+## Optional QUIC Fast Path
+
+- [ ] Create a QUIC design spike.
+- [ ] Evaluate Rust QUIC implementation choices.
+- [ ] Confirm UDP/443 fallback behavior when blocked.
+- [ ] Define how QUIC maps terminal streams and control messages.
+- [ ] Implement QUIC only after the transport abstraction is stable.
+
+## Tests
+
+- [ ] Test transport negotiation.
+- [ ] Test heartbeat timeout.
+- [ ] Test agent reconnect.
+- [ ] Test duplicate connection handling.
+- [ ] Test terminal command routing through the baseline transport.
+- [ ] Test backpressure behavior.
+
+---
+
+# Phase 8.6: Agent Identity, Rotation, and Revocation
+
+Goal: move from enrollment-token bootstrap to production node trust.
+
+## Enrollment and Identity
+
+- [ ] Keep one-time enrollment token flow.
+- [ ] Generate or register durable node identity during enrollment.
+- [ ] Store node credential fingerprint.
+- [ ] Store credential expiration metadata.
+- [ ] Store agent version metadata.
+- [ ] Persist node identity material safely on the agent host.
+- [ ] Document agent identity file permissions.
 
 ## Authentication
 
-- [x] Add user model.
-- [x] Add dev-only bootstrap admin creation.
-- [x] Add login endpoint.
-- [x] Add logout endpoint.
-- [x] Add secure session cookie.
-- [x] Add current-user endpoint.
-- [x] Add auth middleware.
-- [x] Protect terminal WebSocket endpoint with auth.
+- [ ] Authenticate every agent connection using durable node identity.
+- [ ] Reject unknown node identity.
+- [ ] Reject expired node credentials.
+- [ ] Reject revoked nodes.
+- [ ] Audit failed agent authentication.
+
+## Rotation and Revocation
+
+- [ ] Add node credential rotation model.
+- [ ] Add rotation endpoint or command path.
+- [ ] Add audit event for credential rotation.
+- [ ] Enforce revocation on new connections.
+- [ ] Enforce revocation on active connections.
+- [ ] Terminate or detach active terminal sessions when a node is revoked.
+- [ ] Add audit events for forced terminal closure due to revocation.
+
+## Tests
+
+- [ ] Test enrollment token is one-time.
+- [ ] Test durable node identity authenticates.
+- [ ] Test invalid credential is rejected.
+- [ ] Test revoked node cannot reconnect.
+- [ ] Test active node revocation closes or blocks terminal sessions.
+- [ ] Test credential rotation preserves authorized node access.
+
+---
+
+# Phase 8.7: Responsive and Adaptive Production UI
+
+Goal: redesign the UI into reusable pages and components that work across device classes.
+
+## UI Structure
+
+- [ ] Split `sunbolt-ui/src/lib.rs` into focused modules.
+- [ ] Add reusable layout components.
+- [ ] Add reusable button components.
+- [ ] Add reusable status badge components.
+- [ ] Add reusable table/list components.
+- [ ] Add reusable form components.
+- [ ] Add reusable modal/dialog components.
+- [ ] Add reusable bottom sheet components for mobile.
+- [ ] Add centralized API client module.
+- [ ] Add terminal workspace state module.
+- [ ] Move large browser bridge code into a maintainable asset/module boundary.
+
+## Desktop and Laptop
+
+- [ ] Add full navigation layout.
+- [ ] Add dense dashboard layout.
+- [ ] Add multi-tab terminal workspace.
+- [ ] Add node management table with search/filter affordances.
+- [ ] Add audit and access history table views.
+- [ ] Ensure terminal viewport gets primary screen space.
+
+## Tablet
+
+- [ ] Add adaptive two-pane layout where width allows.
+- [ ] Add node list plus detail/terminal split view.
+- [ ] Compact terminal toolbar controls.
+- [ ] Ensure portrait and landscape layouts are usable.
+
+## Mobile
+
+- [ ] Add terminal-first full-screen mobile workspace.
+- [ ] Add bottom navigation or compact top navigation.
+- [ ] Add mobile session switcher.
+- [ ] Add node selector bottom sheet.
+- [ ] Add session actions bottom sheet.
+- [ ] Add mobile MFA/login layout that survives keyboard overlap.
+- [ ] Add mobile terminal accessory toolbar.
+- [ ] Include `Ctrl`, `Esc`, `Tab`, arrow keys, paste, reconnect, detach, and terminate controls.
+- [ ] Replace wide tables with dense list rows on mobile.
+
+## Required Viewport Validation
+
+- [ ] Validate iPhone 11 Pro viewport: `375x812`.
+- [ ] Validate iPad 11 Pro portrait viewport: `834x1194`.
+- [ ] Validate iPad 11 Pro landscape viewport: `1194x834`.
+- [ ] Validate laptop viewport: `1366x768`.
+- [ ] Validate desktop viewport: `1920x1080`.
+
+For each viewport:
+
+- [ ] Navigation does not break.
+- [ ] Terminal is usable.
+- [ ] Session switching works.
+- [ ] Text and controls do not overlap.
+- [ ] Login flow is usable.
+- [ ] MFA flow is usable.
+- [ ] Close tab, detach, and terminate semantics are clear.
+
+---
+
+# Phase 8.8: Observability, Audit, and Operational Logging
+
+Goal: make all major system interactions transparent and diagnosable.
+
+## Structured Tracing
+
+- [ ] Add request ID generation or propagation.
+- [ ] Add tracing fields for `request_id`.
+- [ ] Add tracing fields for `actor_id` or `actor_email`.
+- [ ] Add tracing fields for `node_id`.
+- [ ] Add tracing fields for `session_id`.
+- [ ] Add tracing fields for `transport_id`.
+- [ ] Add tracing fields for `route_id` when routing exists.
+- [ ] Add spans for terminal open/detach/reattach/terminate.
+- [ ] Add spans for agent connect/disconnect/reconnect.
+- [ ] Add spans for transport negotiation.
+
+## Audit Taxonomy
+
+- [ ] Add `terminal.detached`.
+- [ ] Add `terminal.reattached`.
+- [ ] Add `terminal.terminated`.
+- [ ] Add `agent.connected`.
+- [ ] Add `agent.disconnected`.
+- [ ] Add `agent.transport.negotiated`.
+- [ ] Add `node.credential.rotated`.
+- [ ] Add `route.selected`.
+- [ ] Add `route.failed`.
+- [ ] Document audit event schema.
+- [ ] Document which events are security audit events versus operational logs.
+
+## Secret Redaction
+
+- [ ] Review current redaction rules.
+- [ ] Redact cookies.
+- [ ] Redact enrollment tokens.
+- [ ] Redact node credentials.
+- [ ] Redact recovery codes.
+- [ ] Redact passkey credential material.
+- [ ] Add tests for redaction coverage.
+
+---
+
+# Phase 8.9: Security Hardening
+
+Goal: remove production shortcuts and enforce security policy.
+
+## Runtime Mode Validation
+
+- [ ] Add explicit `SUNBOLT_ENV`.
+- [ ] Accept only `development` or `production`.
+- [ ] Fail production startup if required secrets are missing.
+- [ ] Fail production startup if development bootstrap admin is enabled.
+- [ ] Fail production startup if wildcard origins are configured.
+- [ ] Fail production startup if secure cookies are disabled.
+- [ ] Document production config requirements.
+
+## Browser Security
+
+- [ ] Review Content Security Policy.
+- [ ] Review WebSocket origin validation.
+- [ ] Review CORS behavior.
+- [ ] Enforce CSRF protection for state-changing HTTP routes.
+- [ ] Ensure auth tokens are never stored in `localStorage`.
+- [ ] Ensure session cookies are HttpOnly and Secure in production.
 
 ## Authorization
 
-- [x] Add simple role enum for MVP:
-  - [x] `Admin`
-  - [x] `Operator`
-  - [x] `Viewer`
-- [x] Require `Admin` or `Operator` to open terminal.
-- [x] Prevent `Viewer` from opening terminal.
-- [x] Add server-side authorization tests.
+- [ ] Audit every HTTP route for server-side authorization.
+- [ ] Audit every WebSocket command for server-side authorization.
+- [ ] Add permission for terminal reattach.
+- [ ] Add permission for terminal terminate.
+- [ ] Add permission for node credential rotation.
+- [ ] Add tests for viewer/operator/admin boundaries.
+- [ ] Add tests for workspace-level terminal access.
 
-## Audit Logs
+## Rate Limits and Abuse Controls
 
-- [x] Implement audit event writer.
-- [x] Record login success.
-- [x] Record login failure.
-- [x] Record logout.
-- [x] Record terminal opened.
-- [x] Record terminal closed.
-- [x] Record terminal failed.
-- [x] Add access history page.
-- [x] Add audit log page placeholder.
+- [ ] Review login rate limits.
+- [ ] Add MFA challenge rate limits.
+- [ ] Review terminal creation rate limits.
+- [ ] Add enrollment token creation rate limits.
+- [ ] Add agent authentication failure rate limits where practical.
 
 ---
 
-# Phase 3: Agent Node MVP
+# Phase 8.10: Production Validation and Release Gate
 
-## Agent Binary
+Goal: define the checks required before treating a build as production-ready.
 
-- [x] Create `crates/sunbolt-agent`.
-- [x] Add agent config loading.
-- [x] Add agent startup logs.
-- [x] Add agent local node information collection:
-  - [x] hostname
-  - [x] OS
-  - [x] architecture
-  - [x] agent version
-- [x] Add graceful shutdown.
+## Required Local Checks
 
-## Node Enrollment
+- [ ] Run `cargo test`.
+- [ ] Run `cargo clippy --all-targets --all-features -- -D warnings`.
+- [ ] Run `cargo fmt --all -- --check`.
+- [ ] Run UI build checks when frontend tooling is touched.
+- [ ] Run migration verification when database schema changes.
+- [ ] Run `git status` and review changed files.
 
-- [x] Add `nodes` table.
-- [x] Add `node_credentials` table.
-- [x] Add `node_heartbeats` table.
-- [x] Add `enrollment_tokens` table.
-- [x] Add create enrollment token endpoint.
-- [x] Add enrollment command UI.
-- [x] Add agent enrollment request.
-- [x] Mark enrollment token as used.
-- [x] Store node identity.
+## Terminal Reliability Validation
 
-## Agent Connection
+- [ ] Validate local terminal open/input/output/resize/terminate.
+- [ ] Validate remote terminal open/input/output/resize/terminate.
+- [ ] Validate browser route change does not kill PTY.
+- [ ] Validate browser refresh can recover active sessions where supported.
+- [ ] Validate short WebSocket disconnect and reattach.
+- [ ] Validate idle timeout.
+- [ ] Validate absolute max duration.
+- [ ] Validate per-user session limit.
+- [ ] Validate per-node session limit.
 
-- [x] Implement agent outbound connection to control plane.
-- [x] Add heartbeat message.
-- [x] Track node online/offline status.
-- [x] Display nodes in UI.
-- [x] Add node details page.
-- [x] Add revoke node action.
+## Agent Transport Validation
 
-## Remote Terminal Through Agent
+- [ ] Validate outbound TCP/443 transport.
+- [ ] Validate agent reconnect with backoff.
+- [ ] Validate control-plane detection of offline node.
+- [ ] Validate terminal behavior during agent disconnect.
+- [ ] Validate terminal behavior after agent reconnect.
+- [ ] Validate revoked agent cannot reconnect.
+- [ ] Validate QUIC fast path if implemented.
 
-- [x] Define control-plane-to-agent terminal protocol.
-- [x] Implement `StartTerminal` command.
-- [x] Implement `TerminalOutput` event.
-- [x] Implement `WriteInput` command.
-- [x] Implement `ResizeTerminal` command.
-- [x] Implement `CloseTerminal` command.
-- [x] Route browser WebSocket to selected agent.
-- [x] Open terminal on selected remote node.
-- [x] Handle agent disconnect during active terminal.
+## UI Validation
 
----
+- [ ] Validate iPhone 11 Pro: `375x812`.
+- [ ] Validate iPad 11 Pro portrait: `834x1194`.
+- [ ] Validate iPad 11 Pro landscape: `1194x834`.
+- [ ] Validate laptop: `1366x768`.
+- [ ] Validate desktop: `1920x1080`.
+- [ ] Capture screenshots or test artifacts where practical.
 
-# Phase 4: MFA and RBAC
+## Release Documentation
 
-## MFA Foundation
-
-- [x] Create `AuthFactor` trait.
-- [x] Define `FactorType` enum.
-- [x] Define challenge and response types.
-- [x] Add `auth_factors` table.
-- [x] Add factor enrollment flow.
-- [x] Add factor verification flow.
-
-## TOTP
-
-- [x] Add TOTP secret generation.
-- [x] Add QR code display.
-- [x] Add TOTP verification.
-- [x] Add TOTP recovery path.
-
-## Recovery Codes
-
-- [x] Add recovery code generation.
-- [x] Store hashed recovery codes.
-- [x] Verify recovery code.
-- [x] Invalidate used recovery code.
-- [x] Add regenerate recovery codes action.
-
-## WebAuthn / Passkeys
-
-- [x] Research WebAuthn crate choice.
-- [x] Add passkey registration challenge.
-- [x] Add passkey authentication challenge.
-- [x] Add passkey management UI.
-
-## Step-up MFA
-
-- [x] Add policy requiring step-up MFA for terminal open.
-- [x] Add recent-MFA timestamp to session.
-- [x] Prompt MFA before opening terminal when required.
-- [x] Add audit event for MFA challenge and success.
-
-## RBAC
-
-- [x] Add `workspaces` table.
-- [x] Add `workspace_members` table.
-- [x] Add `roles` table.
-- [x] Add `permissions` table.
-- [x] Add `role_permissions` table.
-- [x] Map nodes to workspaces.
-- [x] Add workspace-level permission checks.
-- [x] Add user/team management UI.
+- [ ] Update deployment runbook.
+- [ ] Update backup and restore documentation.
+- [ ] Update security documentation.
+- [ ] Update agent transport documentation.
+- [ ] Update terminal lifecycle documentation.
+- [ ] Update known limitations.
 
 ---
-
-# Phase 5: Hardening and Reliability
-
-## Terminal Reliability
-
-- [x] Add detach/reattach model.
-- [x] Keep PTY alive during short browser disconnect.
-- [x] Add reconnect token.
-- [x] Add session cleanup worker.
-- [x] Add per-user session limit.
-- [x] Add per-node session limit.
-- [x] Add terminal idle timeout.
-- [x] Add terminal absolute max duration.
-
-## Audit Hardening
-
-- [x] Add append-only audit behavior.
-- [x] Add `previous_hash` column.
-- [x] Add `event_hash` column.
-- [x] Verify audit chain integrity.
-- [x] Add audit export.
-
-## Security Hardening
-
-- [x] Add WebSocket origin validation.
-- [x] Add CSRF protection for state-changing HTTP routes.
-- [x] Add secure cookie settings for production.
-- [x] Add content security policy.
-- [x] Add rate limits for login.
-- [x] Add rate limits for terminal creation.
-- [x] Add node revocation enforcement.
-- [x] Add secret redaction in logs.
-
-## Production Readiness
-
-- [x] Add Dockerfile.
-- [x] Add production config example.
-- [x] Add reverse proxy example.
-- [x] Add HTTPS deployment note.
-- [x] Add database migration command docs.
-- [x] Add backup/restore notes.
-
----
-
-# Phase 6: Distributed Expansion
-
-## Routing
-
-- [x] Add `NodeRouter` abstraction.
-- [x] Add route selection for direct agent connection.
-- [x] Add route selection for relay node.
-- [x] Track route health.
-
-## Mesh Research
-
-- [x] Evaluate QUIC transport.
-- [x] Evaluate WireGuard overlay option.
-- [x] Evaluate node-to-node relay mode.
-- [x] Define trust model for node-to-node communication.
-- [x] Define audit implications of relay routing.
-
-## Control Plane HA
-
-- [x] Identify state that must be shared.
-- [x] Evaluate Redis/NATS/Postgres notification channel for active session routing.
-- [x] Design multi-control-plane agent connection strategy.
-- [x] Design sticky routing for active WebSocket sessions.
-
----
-
-# Phase 7 — Web UI Terminal Integration
-
-Goal: connect the Dioxus web UI to the existing control-plane terminal backend.
-The phase is complete only when a user can open the browser UI and interact with a real local shell through Sunbolt.
-
-## UI Route and Layout
-
-- [x] Add a Terminal page or route in the Dioxus web UI.
-- [x] Add a visible navigation entry or button to open the Terminal page.
-- [x] Add terminal page layout with:
-  - [x] page title
-  - [x] connection status
-  - [x] terminal viewport
-  - [x] reconnect or retry action
-  - [x] error display
-- [x] Apply Sunbolt visual direction using sunlight/lightning accents and dark terminal-friendly surfaces.
-
-## Browser Terminal Renderer
-
-- [x] Integrate a real browser terminal renderer such as `xterm.js`, or document and implement the chosen equivalent.
-- [x] Add required JavaScript bridge code if Dioxus needs it.
-- [x] Render terminal output using the terminal renderer, not a fake static text block.
-- [x] Support common ANSI output from shell commands.
-- [x] Ensure the terminal viewport can receive focus and keyboard input.
-
-## WebSocket Client
-
-- [x] Add UI-side WebSocket connection logic.
-- [x] Make the WebSocket URL configurable for local development.
-- [x] Connect to the existing control-plane terminal WebSocket route.
-- [x] Display connection states:
-  - [x] idle
-  - [x] connecting
-  - [x] connected
-  - [x] disconnected
-  - [x] error
-- [x] Show useful error messages when connection fails.
-
-## Terminal Input/Output
-
-- [x] Send keyboard input from the browser terminal to the backend.
-- [x] Receive PTY output from the backend.
-- [x] Render PTY output in the browser terminal viewport.
-- [x] Verify interactive commands work, for example:
-  - [x] `pwd`
-  - [x] `ls`
-  - [x] `echo hello`
-  - [x] `clear`
-  - [x] `Ctrl+C` where practical
-- [x] Ensure binary/control bytes are handled safely enough for MVP.
-
-## Resize and Cleanup
-
-- [x] Send resize messages from browser to backend where practical.
-- [x] Resize terminal viewport when browser/container size changes.
-- [x] Close WebSocket on component unmount or page leave.
-- [x] Ensure backend terminal session is closed or safely detached on UI disconnect.
-- [x] Add reconnect button even if full session reattach is not implemented yet.
-
-## Local Development Documentation
-
-- [x] Document how to run the control-plane backend.
-- [x] Document how to run the Dioxus UI.
-- [x] Document expected local ports.
-- [x] Document required environment variables.
-- [x] Document terminal WebSocket route.
-- [x] Document known MVP limitations.
-
-## Tests and Validation
-
-- [x] Add UI/component tests where practical.
-- [x] Add protocol serialization tests if missing.
-
 
 # Bug / Issue Backlog
 
 Add bugs here as they are discovered.
 
-- [ ] No known bugs yet.
+- [ ] Remote terminal reattach is not production-complete.
+- [ ] UI still needs production component/page split.
+- [ ] Some production-critical state is still in memory.
+- [ ] Agent-control-plane transport still needs production TCP/443 baseline.
 
 ---
 
 # Decision Log
 
-## 2026-05-01
+## 2026-05-08
 
-- [x] Project name changed to **Sunbolt**.
-- [x] Prefer centralized control plane first.
-- [x] Prefer agent-based distributed model later.
-- [x] Do not start with pure P2P.
-- [x] Use Dioxus primarily for UI.
-- [x] Use Axum + Tokio for backend terminal/API logic.
-- [x] Use PostgreSQL + SeaORM if persistent storage is needed.
-- [x] Require `cargo test` and `cargo clippy --all-targets --all-features -- -D warnings` before every commit.
-- [x] Require git add and git commit for every feature, bug fix, UI change, or refactor.
+- [x] The MVP is considered complete.
+- [x] The next phase targets production readiness.
+- [x] All documentation and code-facing text must be written in English.
+- [x] Sunbolt will have only `development` and `production` runtime modes.
+- [x] Sunbolt will own the agent-control-plane transport.
+- [x] Agent nodes must use outbound connections and must not require inbound firewall access.
+- [x] TCP/443 is the required production baseline for agent connectivity.
+- [x] QUIC over UDP/443 is optional and cannot be the only production path.
+- [x] Browser navigation must detach from terminal sessions, not kill PTYs.
+- [x] Terminal UI must support multiple tabs/sessions.
+- [x] UI must be responsive and adaptive across mobile, tablet, laptop, and desktop.
+- [x] Required baseline viewports are iPhone 11 Pro, iPad 11 Pro portrait, iPad 11 Pro landscape, laptop, and desktop.
+
+## Mandatory Git Rule
+
+For every code change that creates a feature, fixes a bug, changes UI, refactors code, changes schema, changes protocol, or updates behavior:
+
+1. Run `cargo test`.
+2. Run `cargo clippy --all-targets --all-features -- -D warnings`.
+3. Ensure both commands pass without errors.
+4. Run `git status` and review the changed files.
+5. Stage the intended files with `git add`.
+6. Create a git commit with a clear message.
+
+Do not commit if `cargo test` or `cargo clippy` fails.
+
+Do not include unrelated files in the commit.
+
+Use focused commit messages, for example:
+
+```text
+feat(auth): add MFA factor trait
+fix(terminal): handle websocket close event
+refactor(protocol): split node messages by direction
+ui(nodes): add server status table
+security(agent): rotate node credentials
+docs(plan): define production transport roadmap
+```
+
+## Commit Message Style
+
+Prefer conventional commit prefixes:
+
+- `feat:` for new features
+- `fix:` for bug fixes
+- `refactor:` for internal code changes
+- `ui:` for UI-only changes
+- `test:` for tests
+- `docs:` for documentation
+- `chore:` for tooling or maintenance
+- `db:` for schema/migration changes
+- `security:` for security hardening
