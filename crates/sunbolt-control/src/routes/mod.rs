@@ -36,6 +36,8 @@ pub const ENROLLMENT_TOKENS_PATH: &str = "/nodes/enrollment-tokens";
 pub const AGENT_ENROLL_PATH: &str = "/agent/enroll";
 pub const AGENT_HEARTBEAT_PATH: &str = "/agent/heartbeat";
 pub const NODES_PATH: &str = "/nodes";
+pub(crate) const NODE_DETAILS_PATH: &str = "/nodes/{node_id}";
+pub(crate) const NODE_REVOKE_PATH: &str = "/nodes/{node_id}/revoke";
 
 /// Builds the control-plane router.
 pub fn router() -> Router {
@@ -78,11 +80,11 @@ pub(crate) fn build_router(state: AppState) -> Router {
         )
         .route(NODES_PATH, get(node::list_nodes).layer(auth_layer.clone()))
         .route(
-            "/nodes/{node_id}",
+            NODE_DETAILS_PATH,
             get(node::node_details).layer(auth_layer.clone()),
         )
         .route(
-            "/nodes/{node_id}/revoke",
+            NODE_REVOKE_PATH,
             post(node::revoke_node).layer(auth_layer.clone()),
         )
         .route(
@@ -168,4 +170,33 @@ fn apply_cors_headers(headers: &mut HeaderMap, origin: &str) {
         HeaderValue::from_static("content-type"),
     );
     headers.append(header::VARY, HeaderValue::from_static("Origin"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
+        AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
+        AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH,
+        NODE_DETAILS_PATH, NODE_REVOKE_PATH, TERMINAL_WS_PATH,
+    };
+
+    #[test]
+    fn route_path_constants_preserve_public_api_paths() {
+        assert_eq!(TERMINAL_WS_PATH, "/terminal/ws");
+        assert_eq!(HEALTH_PATH, "/health");
+        assert_eq!(AUTH_LOGIN_PATH, "/auth/login");
+        assert_eq!(AUTH_LOGOUT_PATH, "/auth/logout");
+        assert_eq!(AUTH_ME_PATH, "/auth/me");
+        assert_eq!(AUTH_TERMINAL_ACCESS_PATH, "/auth/terminal-access");
+        assert_eq!(AUTH_MFA_STEP_UP_PATH, "/auth/mfa/step-up");
+        assert_eq!(ACCESS_HISTORY_PATH, "/access/history");
+        assert_eq!(AUDIT_LOGS_PATH, "/audit/logs");
+        assert_eq!(ENROLLMENT_TOKENS_PATH, "/nodes/enrollment-tokens");
+        assert_eq!(AGENT_ENROLL_PATH, "/agent/enroll");
+        assert_eq!(AGENT_HEARTBEAT_PATH, "/agent/heartbeat");
+        assert_eq!(NODES_PATH, "/nodes");
+        assert_eq!(NODE_DETAILS_PATH, "/nodes/{node_id}");
+        assert_eq!(NODE_REVOKE_PATH, "/nodes/{node_id}/revoke");
+    }
 }

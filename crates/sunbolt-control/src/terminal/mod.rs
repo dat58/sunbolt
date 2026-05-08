@@ -1246,3 +1246,86 @@ pub(crate) fn next_session_id() -> TerminalSessionId {
     let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
     TerminalSessionId(format!("local-{id}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::extract::ws::Message;
+    use serde_json::json;
+    use sunbolt_protocol::{
+        TerminalClientMessage, TerminalErrorCode, TerminalReconnectToken, TerminalServerMessage,
+        TerminalSessionId, TerminalSize as ProtocolTerminalSize,
+    };
+
+    use super::{parse_client_message, serialize_server_message};
+
+    #[test]
+    fn serializes_started_message_with_existing_shape() {
+        let message = TerminalServerMessage::Started {
+            session_id: TerminalSessionId("local-1".to_owned()),
+            node_id: None,
+            size: ProtocolTerminalSize { cols: 80, rows: 24 },
+            reconnect_token: Some(TerminalReconnectToken("token-1".to_owned())),
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&serialize_server_message(&message))
+            .expect("server message should serialize as JSON");
+
+        assert_eq!(
+            value,
+            json!({
+                "type": "started",
+                "session_id": "local-1",
+                "node_id": null,
+                "size": {
+                    "cols": 80,
+                    "rows": 24
+                },
+                "reconnect_token": "token-1"
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_error_message_with_existing_shape() {
+        let message = TerminalServerMessage::Error {
+            session_id: Some(TerminalSessionId("local-1".to_owned())),
+            error: super::protocol_error_text(
+                TerminalErrorCode::TerminalUnavailable,
+                "agent connection dropped",
+            ),
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&serialize_server_message(&message))
+            .expect("server message should serialize as JSON");
+
+        assert_eq!(
+            value,
+            json!({
+                "type": "error",
+                "session_id": "local-1",
+                "error": {
+                    "code": "terminal_unavailable",
+                    "message": "agent connection dropped"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn parses_reattach_message_with_existing_shape() {
+        let message = parse_client_message(Message::Text(
+            r#"{"type":"reattach","session_id":"local-1","reconnect_token":"token-1"}"#
+                .to_owned()
+                .into(),
+        ))
+        .expect("reattach message should parse");
+
+        assert_eq!(
+            message,
+            TerminalClientMessage::Reattach {
+                session_id: TerminalSessionId("local-1".to_owned()),
+                reconnect_token: TerminalReconnectToken("token-1".to_owned()),
+            }
+        );
+    }
+}

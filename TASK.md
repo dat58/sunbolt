@@ -108,11 +108,11 @@ Goal: split large control-plane implementation into maintainable modules without
 
 ## Behavior Preservation
 
-- [ ] Preserve existing route paths.
-- [ ] Preserve existing protocol messages.
-- [ ] Preserve existing tests during the refactor.
-- [ ] Add focused module-level tests where code moves reveal untested behavior.
-- [ ] Avoid unrelated behavior changes in the refactor commit.
+- [x] Preserve existing route paths.
+- [x] Preserve existing protocol messages.
+- [x] Preserve existing tests during the refactor.
+- [x] Add focused module-level tests where code moves reveal untested behavior.
+- [x] Avoid unrelated behavior changes in the refactor commit.
 
 ---
 
