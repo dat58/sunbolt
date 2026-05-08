@@ -63,6 +63,7 @@ pub(crate) enum EnrollmentError {
 pub(crate) enum NodeConnectionError {
     UnknownNode,
     InvalidCredential,
+    CredentialExpired,
     Revoked,
 }
 

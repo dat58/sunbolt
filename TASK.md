@@ -280,13 +280,13 @@ Goal: move from enrollment-token bootstrap to production node trust.
 
 ## Enrollment and Identity
 
-- [ ] Keep one-time enrollment token flow.
-- [ ] Generate or register durable node identity during enrollment.
-- [ ] Store node credential fingerprint.
-- [ ] Store credential expiration metadata.
-- [ ] Store agent version metadata.
-- [ ] Persist node identity material safely on the agent host.
-- [ ] Document agent identity file permissions.
+- [x] Keep one-time enrollment token flow.
+- [x] Generate or register durable node identity during enrollment.
+- [x] Store node credential fingerprint.
+- [x] Store credential expiration metadata.
+- [x] Store agent version metadata.
+- [x] Persist node identity material safely on the agent host.
+- [x] Document agent identity file permissions.
 
 ## Authentication
 

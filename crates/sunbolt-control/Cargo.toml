@@ -11,6 +11,7 @@ futures-util = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 sunbolt-audit = { path = "../sunbolt-audit" }
 sunbolt-auth = { path = "../sunbolt-auth" }
 sunbolt-common = { path = "../sunbolt-common" }

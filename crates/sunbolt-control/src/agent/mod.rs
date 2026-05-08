@@ -1,8 +1,7 @@
 use std::{
     collections::HashMap,
-    hash::{Hash, Hasher},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -16,6 +15,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sunbolt_audit::{AuditEventInput, AuditEventKind};
 use sunbolt_protocol::{
     transport::{
@@ -48,6 +48,7 @@ const AGENT_TRANSPORT_LONG_POLL_RETRY: Duration = Duration::from_secs(1);
 const AGENT_TRANSPORT_LONG_POLL_BATCH: usize = 32;
 const LONG_POLL_DEGRADED_REASON: &str =
     "restrictive network fallback active; terminal latency may be higher";
+pub(crate) const NODE_CREDENTIAL_TTL: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredAgentConnection {
@@ -256,6 +257,8 @@ pub(crate) struct AgentEnrollmentRequest {
 pub(crate) struct AgentEnrollmentResponse {
     pub(crate) node_id: String,
     pub(crate) credential_fingerprint: String,
+    pub(crate) credential_secret: String,
+    pub(crate) credential_expires_at_unix_secs: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -274,14 +277,32 @@ pub(crate) struct AgentHeartbeatResponse {
     pub(crate) node: NodeView,
 }
 
-pub(crate) fn credential_fingerprint(request: &AgentEnrollmentRequest) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    request.node_name.hash(&mut hasher);
-    request.hostname.hash(&mut hasher);
-    request.os.hash(&mut hasher);
-    request.architecture.hash(&mut hasher);
-    request.agent_version.hash(&mut hasher);
-    format!("dev-{:016x}", hasher.finish())
+pub(crate) fn generate_node_credential() -> (String, String) {
+    let secret = crate::security::random_token();
+    let fingerprint = credential_fingerprint(&secret);
+    (secret, fingerprint)
+}
+
+pub(crate) fn credential_fingerprint(secret: &str) -> String {
+    let digest = Sha256::digest(secret.as_bytes());
+    let mut fingerprint = String::with_capacity("sha256:".len() + digest.len() * 2);
+    fingerprint.push_str("sha256:");
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(fingerprint, "{byte:02x}");
+    }
+    fingerprint
+}
+
+pub(crate) fn credential_expiration_unix_secs(now: SystemTime) -> i64 {
+    let expires_at = now + NODE_CREDENTIAL_TTL;
+    i64::try_from(
+        expires_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX)
 }
 
 pub(crate) async fn agent_transport_websocket(
@@ -773,7 +794,9 @@ fn authenticate_transport_client(
             &hello.agent_version,
         )
         .map_err(|error| match error {
-            NodeConnectionError::UnknownNode | NodeConnectionError::InvalidCredential => {
+            NodeConnectionError::UnknownNode
+            | NodeConnectionError::InvalidCredential
+            | NodeConnectionError::CredentialExpired => {
                 AgentTransportConnectionError::AuthenticationFailed
             }
             NodeConnectionError::Revoked => AgentTransportConnectionError::Revoked,

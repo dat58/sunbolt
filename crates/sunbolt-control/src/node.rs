@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use serde::Serialize;
@@ -12,8 +12,8 @@ use sunbolt_auth::User;
 
 use crate::{
     agent::{
-        credential_fingerprint, AgentEnrollmentRequest, AgentEnrollmentResponse,
-        AgentHeartbeatRequest,
+        credential_expiration_unix_secs, generate_node_credential, AgentEnrollmentRequest,
+        AgentEnrollmentResponse, AgentHeartbeatRequest, NODE_CREDENTIAL_TTL,
     },
     config::NODE_OFFLINE_AFTER,
     error::{EnrollmentError, NodeConnectionError},
@@ -78,6 +78,8 @@ pub(crate) enum NodeStatus {
 struct NodeCredentialRecord {
     node_id: u64,
     credential_fingerprint: String,
+    expires_at: Instant,
+    expires_at_unix_secs: i64,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -96,6 +98,7 @@ pub(crate) struct NodeView {
     pub(crate) architecture: String,
     pub(crate) agent_version: String,
     pub(crate) status: NodeStatus,
+    pub(crate) credential_expires_at_unix_secs: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -156,7 +159,9 @@ impl NodeEnrollmentRegistry {
 
         let id = self.next_node_id.fetch_add(1, Ordering::Relaxed);
         let node_id = format!("node-{id}");
-        let credential_fingerprint = credential_fingerprint(&request);
+        let (credential_secret, credential_fingerprint) = generate_node_credential();
+        let credential_expires_at_unix_secs = credential_expiration_unix_secs(SystemTime::now());
+        let credential_expires_at = Instant::now() + NODE_CREDENTIAL_TTL;
         token.used_by_node_id = Some(id);
 
         state.nodes.push(NodeRecord {
@@ -172,6 +177,8 @@ impl NodeEnrollmentRegistry {
         state.credentials.push(NodeCredentialRecord {
             node_id: id,
             credential_fingerprint: credential_fingerprint.clone(),
+            expires_at: credential_expires_at,
+            expires_at_unix_secs: credential_expires_at_unix_secs,
         });
         state.heartbeats.push(NodeHeartbeatRecord {
             node_id: id,
@@ -182,6 +189,8 @@ impl NodeEnrollmentRegistry {
         Ok(AgentEnrollmentResponse {
             node_id,
             credential_fingerprint,
+            credential_secret,
+            credential_expires_at_unix_secs,
         })
     }
 
@@ -202,12 +211,14 @@ impl NodeEnrollmentRegistry {
         if node.status == NodeStatus::Revoked {
             return Err(NodeConnectionError::Revoked);
         }
-        let credential_matches = state.credentials.iter().any(|credential| {
+        let Some(credential) = state.credentials.iter().find(|credential| {
             credential.node_id == node.id
                 && credential.credential_fingerprint == request.credential_fingerprint
-        });
-        if !credential_matches {
+        }) else {
             return Err(NodeConnectionError::InvalidCredential);
+        };
+        if credential.expires_at <= Instant::now() {
+            return Err(NodeConnectionError::CredentialExpired);
         }
 
         state.nodes[node_index].hostname = request.hostname;
@@ -222,7 +233,11 @@ impl NodeEnrollmentRegistry {
             received_at: Instant::now(),
         });
 
-        Ok(node_view(&state.nodes[node_index], Some(Instant::now())))
+        Ok(node_view(
+            &state.nodes[node_index],
+            Some(Instant::now()),
+            credential_expiration_for_node(&state, node_id),
+        ))
     }
 
     pub(crate) fn authenticate_transport(
@@ -244,12 +259,14 @@ impl NodeEnrollmentRegistry {
         if node.status == NodeStatus::Revoked {
             return Err(NodeConnectionError::Revoked);
         }
-        let credential_matches = state.credentials.iter().any(|credential| {
+        let Some(credential) = state.credentials.iter().find(|credential| {
             credential.node_id == node.id
                 && credential.credential_fingerprint == credential_fingerprint
-        });
-        if !credential_matches {
+        }) else {
             return Err(NodeConnectionError::InvalidCredential);
+        };
+        if credential.expires_at <= Instant::now() {
+            return Err(NodeConnectionError::CredentialExpired);
         }
 
         agent_version.clone_into(&mut state.nodes[node_index].agent_version);
@@ -261,7 +278,11 @@ impl NodeEnrollmentRegistry {
             received_at: Instant::now(),
         });
 
-        Ok(node_view(&state.nodes[node_index], Some(Instant::now())))
+        Ok(node_view(
+            &state.nodes[node_index],
+            Some(Instant::now()),
+            credential_expiration_for_node(&state, internal_node_id),
+        ))
     }
 
     pub(crate) fn list_nodes(&self) -> Vec<NodeView> {
@@ -272,7 +293,13 @@ impl NodeEnrollmentRegistry {
         state
             .nodes
             .iter()
-            .map(|node| node_view(node, latest_heartbeat_at(&state, node.id)))
+            .map(|node| {
+                node_view(
+                    node,
+                    latest_heartbeat_at(&state, node.id),
+                    credential_expiration_for_node(&state, node.id),
+                )
+            })
             .collect()
     }
 
@@ -285,7 +312,13 @@ impl NodeEnrollmentRegistry {
             .nodes
             .iter()
             .find(|node| node.node_id == node_id)
-            .map(|node| node_view(node, latest_heartbeat_at(&state, node.id)))
+            .map(|node| {
+                node_view(
+                    node,
+                    latest_heartbeat_at(&state, node.id),
+                    credential_expiration_for_node(&state, node.id),
+                )
+            })
     }
 
     pub(crate) fn revoke_node(&self, node_id: &str) -> Result<NodeView, NodeConnectionError> {
@@ -299,9 +332,11 @@ impl NodeEnrollmentRegistry {
             .position(|node| node.node_id == node_id)
             .ok_or(NodeConnectionError::UnknownNode)?;
         state.nodes[node_index].status = NodeStatus::Revoked;
+        let node_pk = state.nodes[node_index].id;
         Ok(node_view(
             &state.nodes[node_index],
-            latest_heartbeat_at(&state, state.nodes[node_index].id),
+            latest_heartbeat_at(&state, node_pk),
+            credential_expiration_for_node(&state, node_pk),
         ))
     }
 
@@ -320,7 +355,20 @@ fn latest_heartbeat_at(state: &NodeEnrollmentState, node_id: u64) -> Option<Inst
         .map(|heartbeat| heartbeat.received_at)
 }
 
-fn node_view(node: &NodeRecord, last_heartbeat_at: Option<Instant>) -> NodeView {
+fn credential_expiration_for_node(state: &NodeEnrollmentState, node_id: u64) -> Option<i64> {
+    state
+        .credentials
+        .iter()
+        .filter(|credential| credential.node_id == node_id)
+        .map(|credential| credential.expires_at_unix_secs)
+        .max()
+}
+
+fn node_view(
+    node: &NodeRecord,
+    last_heartbeat_at: Option<Instant>,
+    credential_expires_at_unix_secs: Option<i64>,
+) -> NodeView {
     let status = match node.status {
         NodeStatus::Online
             if last_heartbeat_at
@@ -339,5 +387,6 @@ fn node_view(node: &NodeRecord, last_heartbeat_at: Option<Instant>) -> NodeView 
         architecture: node.architecture.clone(),
         agent_version: node.agent_version.clone(),
         status,
+        credential_expires_at_unix_secs,
     }
 }

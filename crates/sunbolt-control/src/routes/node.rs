@@ -114,7 +114,11 @@ pub(crate) async fn revoke_node(
             }),
         )
             .into_response(),
-        Err(NodeConnectionError::InvalidCredential | NodeConnectionError::Revoked) => (
+        Err(
+            NodeConnectionError::InvalidCredential
+            | NodeConnectionError::CredentialExpired
+            | NodeConnectionError::Revoked,
+        ) => (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
                 error: "node is not allowed",

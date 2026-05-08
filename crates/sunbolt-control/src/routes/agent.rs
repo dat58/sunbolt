@@ -44,7 +44,11 @@ pub(crate) async fn agent_heartbeat(
             node,
         })
         .into_response(),
-        Err(NodeConnectionError::UnknownNode | NodeConnectionError::InvalidCredential) => (
+        Err(
+            NodeConnectionError::UnknownNode
+            | NodeConnectionError::InvalidCredential
+            | NodeConnectionError::CredentialExpired,
+        ) => (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
                 error: "invalid node credential",

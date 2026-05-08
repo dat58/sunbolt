@@ -74,6 +74,7 @@ pub struct NodeCredentialRecord {
     pub credential_fingerprint: String,
     pub credential_kind: String,
     pub created_at_unix_secs: i64,
+    pub expires_at_unix_secs: i64,
 }
 
 /// Input for appending durable node credential material metadata.
@@ -82,6 +83,7 @@ pub struct NodeCredentialInput {
     pub node_pk: NodePk,
     pub credential_fingerprint: String,
     pub credential_kind: String,
+    pub expires_at_unix_secs: i64,
 }
 
 /// Repository boundary for durable node identity credentials.
@@ -240,6 +242,7 @@ mod tests {
                 credential_fingerprint: input.credential_fingerprint,
                 credential_kind: input.credential_kind,
                 created_at_unix_secs: 1,
+                expires_at_unix_secs: input.expires_at_unix_secs,
             })))
         }
 
@@ -253,6 +256,7 @@ mod tests {
                 credential_fingerprint: "sha256:test".to_owned(),
                 credential_kind: "development-fingerprint".to_owned(),
                 created_at_unix_secs: 1,
+                expires_at_unix_secs: 91,
             }])))
         }
     }
@@ -326,6 +330,7 @@ mod tests {
 
         assert_eq!(node.node_id, "node-1");
         assert_eq!(credential.node_pk, node.id);
+        assert_eq!(credential.expires_at_unix_secs, 91);
         assert_eq!(heartbeat.status, NodeStatusRecord::Online);
     }
 }

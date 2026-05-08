@@ -1,6 +1,15 @@
-use std::{collections::HashMap, env, future::Future, time::Duration};
+use std::{
+    collections::HashMap,
+    env, fs,
+    fs::OpenOptions,
+    future::Future,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sunbolt_protocol::{
     transport::{
         AgentTransportClientHello, AgentTransportEnvelope, AgentTransportHeartbeat,
@@ -23,6 +32,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const AGENT_TRANSPORT_WS_PATH: &str = "/agent/transport/ws";
 const AGENT_TRANSPORT_QUIC_PATH: &str = "/agent/transport/quic";
 const AGENT_TRANSPORT_LONG_POLL_PATH: &str = "/agent/transport/long-poll";
+const AGENT_IDENTITY_FILE_NAME: &str = "identity.json";
 
 /// Returns a stable name for the agent component.
 #[must_use]
@@ -36,6 +46,7 @@ pub struct AgentConfig {
     pub control_plane_url: String,
     pub node_name: String,
     pub enrollment_token: Option<String>,
+    pub identity_path: PathBuf,
 }
 
 impl AgentConfig {
@@ -45,6 +56,7 @@ impl AgentConfig {
     /// - `SUNBOLT_CONTROL_PLANE_URL`
     /// - `SUNBOLT_AGENT_NODE_NAME`
     /// - `SUNBOLT_AGENT_ENROLLMENT_TOKEN`
+    /// - `SUNBOLT_AGENT_IDENTITY_PATH`
     #[must_use]
     pub fn from_env() -> Self {
         Self::from_lookup(|name| env::var(name).ok())
@@ -59,11 +71,16 @@ impl AgentConfig {
             .unwrap_or_else(|| default_node_name(&mut lookup));
         let enrollment_token =
             lookup("SUNBOLT_AGENT_ENROLLMENT_TOKEN").filter(|value| !value.trim().is_empty());
+        let identity_path = lookup("SUNBOLT_AGENT_IDENTITY_PATH")
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_identity_path(&mut lookup));
 
         Self {
             control_plane_url,
             node_name,
             enrollment_token,
+            identity_path,
         }
     }
 }
@@ -93,6 +110,85 @@ pub struct AgentEnrollmentRequest {
 pub struct AgentEnrollmentResponse {
     pub node_id: String,
     pub credential_fingerprint: String,
+    pub credential_secret: String,
+    pub credential_expires_at_unix_secs: i64,
+}
+
+/// Durable node identity material persisted by the agent host.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentNodeIdentity {
+    pub node_id: String,
+    pub credential_fingerprint: String,
+    pub credential_secret: String,
+    pub credential_expires_at_unix_secs: i64,
+    pub agent_version: String,
+}
+
+impl AgentNodeIdentity {
+    #[must_use]
+    pub fn from_enrollment(
+        enrollment: &AgentEnrollmentResponse,
+        node_info: &LocalNodeInfo,
+    ) -> Self {
+        Self {
+            node_id: enrollment.node_id.clone(),
+            credential_fingerprint: enrollment.credential_fingerprint.clone(),
+            credential_secret: enrollment.credential_secret.clone(),
+            credential_expires_at_unix_secs: enrollment.credential_expires_at_unix_secs,
+            agent_version: node_info.agent_version.clone(),
+        }
+    }
+
+    /// Loads durable agent identity material from disk when present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identity file exists but cannot be read or parsed.
+    pub fn load_from_path(path: &Path) -> Result<Option<Self>, AgentError> {
+        match fs::read_to_string(path) {
+            Ok(contents) => serde_json::from_str(&contents)
+                .map(Some)
+                .map_err(AgentError::IdentityFormat),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(AgentError::IdentityIo(error)),
+        }
+    }
+
+    /// Persists durable agent identity material with restrictive file permissions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identity directory or file cannot be written.
+    pub fn save_to_path(&self, path: &Path) -> Result<(), AgentError> {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            let parent_already_exists = parent.exists();
+            fs::create_dir_all(parent).map_err(AgentError::IdentityIo)?;
+            if !parent_already_exists {
+                restrict_directory_permissions(parent)?;
+            }
+        }
+
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        let file = options.open(path).map_err(AgentError::IdentityIo)?;
+        serde_json::to_writer_pretty(file, self).map_err(AgentError::IdentityFormat)?;
+        restrict_file_permissions(path)?;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn credential_secret_matches_fingerprint(&self) -> bool {
+        credential_fingerprint(&self.credential_secret) == self.credential_fingerprint
+    }
 }
 
 /// Heartbeat status reported by an agent connection.
@@ -149,14 +245,14 @@ impl AgentConnection {
     #[must_use]
     pub fn new(
         config: &AgentConfig,
-        enrollment: &AgentEnrollmentResponse,
+        identity: &AgentNodeIdentity,
         node_info: &LocalNodeInfo,
     ) -> Self {
         Self {
             control_plane_url: config.control_plane_url.clone(),
             heartbeat: AgentHeartbeatMessage::from_node_identity(
-                enrollment.node_id.clone(),
-                enrollment.credential_fingerprint.clone(),
+                identity.node_id.clone(),
+                identity.credential_fingerprint.clone(),
                 node_info,
             ),
         }
@@ -514,13 +610,13 @@ impl AgentRuntime {
         S: Future<Output = ()>,
     {
         let client = reqwest::Client::new();
-        let enrollment = self.enroll(&client).await?;
+        let identity = self.load_or_enroll_identity(&client).await?;
         info!(
-            node_id = %enrollment.node_id,
-            "agent enrolled with control plane"
+            node_id = %identity.node_id,
+            "agent identity loaded"
         );
 
-        let connection = AgentConnection::new(&self.config, &enrollment, &self.node_info);
+        let connection = AgentConnection::new(&self.config, &identity, &self.node_info);
         self.send_heartbeat(&client, &connection).await?;
         info!(
             node_id = %connection.heartbeat_message().node_id,
@@ -562,6 +658,20 @@ impl AgentRuntime {
         Ok(response.json::<AgentEnrollmentResponse>().await?)
     }
 
+    async fn load_or_enroll_identity(
+        &self,
+        client: &reqwest::Client,
+    ) -> Result<AgentNodeIdentity, AgentError> {
+        if let Some(identity) = AgentNodeIdentity::load_from_path(&self.config.identity_path)? {
+            return Ok(identity);
+        }
+
+        let enrollment = self.enroll(client).await?;
+        let identity = AgentNodeIdentity::from_enrollment(&enrollment, &self.node_info);
+        identity.save_to_path(&self.config.identity_path)?;
+        Ok(identity)
+    }
+
     async fn send_heartbeat(
         &self,
         client: &reqwest::Client,
@@ -584,6 +694,10 @@ pub enum AgentError {
     MissingEnrollmentToken,
     #[error("agent control-plane request failed: {0}")]
     ControlPlaneRequest(#[from] reqwest::Error),
+    #[error("agent identity file I/O failed: {0}")]
+    IdentityIo(#[source] std::io::Error),
+    #[error("agent identity file format is invalid: {0}")]
+    IdentityFormat(#[source] serde_json::Error),
     #[error("terminal session {0} already exists")]
     TerminalSessionExists(String),
     #[error("terminal session {0} does not exist")]
@@ -618,6 +732,67 @@ fn quic_url_for_path(base: &str, path: &str) -> String {
     }
 }
 
+fn default_identity_path(lookup: &mut impl FnMut(&str) -> Option<String>) -> PathBuf {
+    if let Some(config_home) = lookup("XDG_CONFIG_HOME").filter(|value| !value.trim().is_empty()) {
+        return PathBuf::from(config_home)
+            .join("sunbolt")
+            .join(AGENT_IDENTITY_FILE_NAME);
+    }
+    if let Some(home) = lookup("HOME").filter(|value| !value.trim().is_empty()) {
+        return PathBuf::from(home)
+            .join(".config")
+            .join("sunbolt")
+            .join(AGENT_IDENTITY_FILE_NAME);
+    }
+    if let Some(profile) = lookup("USERPROFILE").filter(|value| !value.trim().is_empty()) {
+        return PathBuf::from(profile)
+            .join("AppData")
+            .join("Roaming")
+            .join("Sunbolt")
+            .join(AGENT_IDENTITY_FILE_NAME);
+    }
+    PathBuf::from(".sunbolt").join(AGENT_IDENTITY_FILE_NAME)
+}
+
+fn credential_fingerprint(secret: &str) -> String {
+    let digest = Sha256::digest(secret.as_bytes());
+    let mut fingerprint = String::with_capacity("sha256:".len() + digest.len() * 2);
+    fingerprint.push_str("sha256:");
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(fingerprint, "{byte:02x}");
+    }
+    fingerprint
+}
+
+fn restrict_directory_permissions(path: &Path) -> Result<(), AgentError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(AgentError::IdentityIo)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+fn restrict_file_permissions(path: &Path) -> Result<(), AgentError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(AgentError::IdentityIo)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 fn terminal_size_from_protocol(size: ProtocolTerminalSize) -> TerminalSize {
     TerminalSize::new(size.cols.max(1), size.rows.max(1))
 }
@@ -645,11 +820,12 @@ fn hostname_from_lookup(lookup: &mut impl FnMut(&str) -> Option<String>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        component_name, quic_url_for_path, websocket_url_for_path, AgentConfig, AgentConnection,
-        AgentEnrollmentRequest, AgentEnrollmentResponse, AgentHeartbeatMessage,
-        AgentHeartbeatStatus, AgentOutboundTransportPlan, AgentRuntime, AgentTerminalRuntime,
-        LocalNodeInfo, LogLevel, DEFAULT_CONTROL_PLANE_URL,
+        component_name, credential_fingerprint, quic_url_for_path, websocket_url_for_path,
+        AgentConfig, AgentConnection, AgentEnrollmentRequest, AgentEnrollmentResponse,
+        AgentHeartbeatMessage, AgentHeartbeatStatus, AgentNodeIdentity, AgentOutboundTransportPlan,
+        AgentRuntime, AgentTerminalRuntime, LocalNodeInfo, LogLevel, DEFAULT_CONTROL_PLANE_URL,
     };
+    use std::path::PathBuf;
     use sunbolt_protocol::{
         transport::{
             AgentTransportHeartbeat, AgentTransportKind, AgentTransportMessageId,
@@ -674,6 +850,10 @@ mod tests {
         assert_eq!(config.control_plane_url, DEFAULT_CONTROL_PLANE_URL);
         assert_eq!(config.node_name, "local-agent");
         assert_eq!(config.enrollment_token, None);
+        assert_eq!(
+            config.identity_path,
+            PathBuf::from(".sunbolt").join("identity.json")
+        );
     }
 
     #[test]
@@ -682,12 +862,17 @@ mod tests {
             "SUNBOLT_CONTROL_PLANE_URL" => Some("https://control.example.test".to_owned()),
             "SUNBOLT_AGENT_NODE_NAME" => Some("node-a".to_owned()),
             "SUNBOLT_AGENT_ENROLLMENT_TOKEN" => Some("token-1".to_owned()),
+            "SUNBOLT_AGENT_IDENTITY_PATH" => Some("/tmp/sunbolt-agent.json".to_owned()),
             _ => None,
         });
 
         assert_eq!(config.control_plane_url, "https://control.example.test");
         assert_eq!(config.node_name, "node-a");
         assert_eq!(config.enrollment_token.as_deref(), Some("token-1"));
+        assert_eq!(
+            config.identity_path,
+            PathBuf::from("/tmp/sunbolt-agent.json")
+        );
     }
 
     #[test]
@@ -728,11 +913,9 @@ mod tests {
             control_plane_url: "https://control.example.test/".to_owned(),
             node_name: "node-a".to_owned(),
             enrollment_token: None,
+            identity_path: test_identity_path(),
         };
-        let enrollment = AgentEnrollmentResponse {
-            node_id: "node-1".to_owned(),
-            credential_fingerprint: "dev-fingerprint".to_owned(),
-        };
+        let identity = test_identity();
         let info = LocalNodeInfo {
             hostname: "host-a".to_owned(),
             os: "linux".to_owned(),
@@ -740,7 +923,7 @@ mod tests {
             agent_version: "0.1.0".to_owned(),
         };
 
-        let connection = AgentConnection::new(&config, &enrollment, &info);
+        let connection = AgentConnection::new(&config, &identity, &info);
 
         assert_eq!(
             connection.heartbeat_endpoint(),
@@ -779,11 +962,9 @@ mod tests {
             control_plane_url: "https://control.example.test/".to_owned(),
             node_name: "node-a".to_owned(),
             enrollment_token: None,
+            identity_path: test_identity_path(),
         };
-        let enrollment = AgentEnrollmentResponse {
-            node_id: "node-1".to_owned(),
-            credential_fingerprint: "dev-fingerprint".to_owned(),
-        };
+        let identity = test_identity();
         let info = LocalNodeInfo {
             hostname: "host-a".to_owned(),
             os: "linux".to_owned(),
@@ -791,7 +972,7 @@ mod tests {
             agent_version: "0.1.0".to_owned(),
         };
 
-        let connection = AgentConnection::new(&config, &enrollment, &info);
+        let connection = AgentConnection::new(&config, &identity, &info);
 
         assert_eq!(
             connection.long_poll_transport_endpoint(),
@@ -813,18 +994,16 @@ mod tests {
             control_plane_url: "https://control.example.test".to_owned(),
             node_name: "node-a".to_owned(),
             enrollment_token: None,
+            identity_path: test_identity_path(),
         };
-        let enrollment = AgentEnrollmentResponse {
-            node_id: "node-1".to_owned(),
-            credential_fingerprint: "dev-fingerprint".to_owned(),
-        };
+        let identity = test_identity();
         let info = LocalNodeInfo {
             hostname: "host-a".to_owned(),
             os: "linux".to_owned(),
             architecture: "x86_64".to_owned(),
             agent_version: "0.1.0".to_owned(),
         };
-        let connection = AgentConnection::new(&config, &enrollment, &info);
+        let connection = AgentConnection::new(&config, &identity, &info);
 
         let plan = AgentOutboundTransportPlan::from_connection(&connection);
         let hello_envelope = connection.transport_client_hello_envelope();
@@ -918,6 +1097,7 @@ mod tests {
                 control_plane_url: "https://control.example.test".to_owned(),
                 node_name: "node-a".to_owned(),
                 enrollment_token: Some("token-1".to_owned()),
+                identity_path: test_identity_path(),
             },
             &LocalNodeInfo {
                 hostname: "host-a".to_owned(),
@@ -941,6 +1121,7 @@ mod tests {
                 control_plane_url: "https://control.example.test".to_owned(),
                 node_name: "node-a".to_owned(),
                 enrollment_token: None,
+                identity_path: test_identity_path(),
             },
             &LocalNodeInfo {
                 hostname: "host-a".to_owned(),
@@ -964,6 +1145,7 @@ mod tests {
                 control_plane_url: "https://control.example.test".to_owned(),
                 node_name: "node-a".to_owned(),
                 enrollment_token: None,
+                identity_path: test_identity_path(),
             },
             LocalNodeInfo {
                 hostname: "host-a".to_owned(),
@@ -987,6 +1169,7 @@ mod tests {
                 control_plane_url: "https://control.example.test".to_owned(),
                 node_name: "node-a".to_owned(),
                 enrollment_token: None,
+                identity_path: test_identity_path(),
             },
             LocalNodeInfo {
                 hostname: "host-a".to_owned(),
@@ -1009,5 +1192,77 @@ mod tests {
             error.to_string(),
             "agent enrollment token is not configured"
         );
+    }
+
+    #[test]
+    fn node_identity_persists_to_restricted_file() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "sunbolt-agent-identity-test-{}-{}",
+                std::process::id(),
+                "node_identity_persists"
+            ))
+            .join("identity.json");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+        let enrollment = AgentEnrollmentResponse {
+            node_id: "node-1".to_owned(),
+            credential_fingerprint: credential_fingerprint("secret-1"),
+            credential_secret: "secret-1".to_owned(),
+            credential_expires_at_unix_secs: 4_102_444_800,
+        };
+        let identity = AgentNodeIdentity::from_enrollment(
+            &enrollment,
+            &LocalNodeInfo {
+                hostname: "host-a".to_owned(),
+                os: "linux".to_owned(),
+                architecture: "x86_64".to_owned(),
+                agent_version: "0.1.0".to_owned(),
+            },
+        );
+
+        identity
+            .save_to_path(&path)
+            .expect("identity file should save");
+        let loaded = AgentNodeIdentity::load_from_path(&path)
+            .expect("identity file should load")
+            .expect("identity should exist");
+
+        assert_eq!(loaded, identity);
+        assert!(loaded.credential_secret_matches_fingerprint());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("identity metadata should load")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+            let dir_mode = std::fs::metadata(path.parent().expect("identity has parent"))
+                .expect("identity directory metadata should load")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700);
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    fn test_identity_path() -> PathBuf {
+        PathBuf::from("/tmp/sunbolt-agent-test-identity.json")
+    }
+
+    fn test_identity() -> AgentNodeIdentity {
+        AgentNodeIdentity {
+            node_id: "node-1".to_owned(),
+            credential_fingerprint: credential_fingerprint("secret-1"),
+            credential_secret: "secret-1".to_owned(),
+            credential_expires_at_unix_secs: 4_102_444_800,
+            agent_version: "0.1.0".to_owned(),
+        }
     }
 }

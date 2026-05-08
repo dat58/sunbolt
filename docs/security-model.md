@@ -73,6 +73,12 @@ Opening a production terminal must be compatible with step-up MFA. Recent MFA st
 
 Node enrollment starts with a one-time enrollment token. Long-term node trust must use node identity material, not permanent shared passwords.
 
+During enrollment, the control plane consumes the one-time token, creates the
+stable node ID, generates node credential material, stores only the credential
+fingerprint and expiration metadata, and returns the credential secret once to
+the agent. The agent persists that identity material on the node host and reuses
+it for later heartbeats and transport negotiation.
+
 Production node identity should support:
 
 - Node private key or certificate material.
@@ -82,6 +88,10 @@ Production node identity should support:
 - Node revocation.
 - Agent version tracking.
 - Heartbeat and health state.
+
+Agent identity files must be readable and writable only by the agent service
+account. On Unix hosts, the directory should be `0700` and the file should be
+`0600`; on other platforms, apply equivalent owner-only access controls.
 
 Revoked nodes must be unable to open or continue terminal sessions.
 
