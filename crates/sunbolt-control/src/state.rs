@@ -181,6 +181,7 @@ mod tests {
     use super::{
         auth_config_for_mode, required_postgres_config_for_mode, ProductionState, RuntimeMode,
     };
+    use sunbolt_auth::AuthService;
     use sunbolt_storage::{PostgresConfig, StorageError};
 
     #[test]
@@ -189,6 +190,15 @@ mod tests {
 
         assert!(!config.bootstrap_admin);
         assert!(config.secure_cookie);
+    }
+
+    #[test]
+    fn production_auth_service_does_not_accept_development_bootstrap_admin() {
+        let auth = AuthService::new(auth_config_for_mode(RuntimeMode::Production));
+
+        assert!(auth
+            .login("admin@sunbolt.local", "sunbolt-dev-admin")
+            .is_err());
     }
 
     #[test]

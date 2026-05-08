@@ -144,10 +144,10 @@ Goal: move production-critical state to PostgreSQL-backed repositories.
 
 ## Tests
 
-- [ ] Add repository unit tests using mockable boundaries where practical.
-- [ ] Add migration tests where practical.
-- [ ] Add production config validation tests.
-- [ ] Add tests proving production mode does not rely on development bootstrap admin.
+- [x] Add repository unit tests using mockable boundaries where practical.
+- [x] Add migration tests where practical.
+- [x] Add production config validation tests.
+- [x] Add tests proving production mode does not rely on development bootstrap admin.
 
 ---
 

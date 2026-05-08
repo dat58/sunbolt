@@ -101,8 +101,91 @@ impl DurableRepository for TerminalSessionMetadataRepositoryBoundary {
 
 #[cfg(test)]
 mod tests {
-    use super::TerminalSessionMetadataRepositoryBoundary;
-    use crate::repositories::{DurableRepository, DurableStateKind};
+    use std::future;
+
+    use super::{
+        TerminalSessionInput, TerminalSessionMetadataRepository,
+        TerminalSessionMetadataRepositoryBoundary, TerminalSessionRecord,
+        TerminalSessionStateRecord, TerminalSessionUpdate,
+    };
+    use crate::repositories::{DurableRepository, DurableStateKind, RepositoryFuture};
+
+    struct MockTerminalSessionRepository;
+
+    impl DurableRepository for MockTerminalSessionRepository {
+        const STATE_KIND: DurableStateKind = DurableStateKind::TerminalSessionMetadata;
+    }
+
+    impl TerminalSessionMetadataRepository for MockTerminalSessionRepository {
+        fn create_terminal_session(
+            &self,
+            input: TerminalSessionInput,
+        ) -> RepositoryFuture<'_, TerminalSessionRecord> {
+            Box::pin(future::ready(Ok(TerminalSessionRecord {
+                id: 1,
+                session_id: input.session_id,
+                user_id: input.user_id,
+                node_id: input.node_id,
+                state: input.state,
+                started_at_unix_secs: input.started_at_unix_secs,
+                ended_at_unix_secs: None,
+                exit_code: None,
+                created_at_unix_secs: 1,
+            })))
+        }
+
+        fn update_terminal_session<'a>(
+            &'a self,
+            session_id: &'a str,
+            update: TerminalSessionUpdate,
+        ) -> RepositoryFuture<'a, TerminalSessionRecord> {
+            Box::pin(future::ready(Ok(TerminalSessionRecord {
+                id: 1,
+                session_id: session_id.to_owned(),
+                user_id: 7,
+                node_id: Some("node-1".to_owned()),
+                state: update.state,
+                started_at_unix_secs: Some(1),
+                ended_at_unix_secs: update.ended_at_unix_secs,
+                exit_code: update.exit_code,
+                created_at_unix_secs: 1,
+            })))
+        }
+
+        fn find_terminal_session<'a>(
+            &'a self,
+            session_id: &'a str,
+        ) -> RepositoryFuture<'a, Option<TerminalSessionRecord>> {
+            Box::pin(future::ready(Ok(Some(TerminalSessionRecord {
+                id: 1,
+                session_id: session_id.to_owned(),
+                user_id: 7,
+                node_id: Some("node-1".to_owned()),
+                state: TerminalSessionStateRecord::Active,
+                started_at_unix_secs: Some(1),
+                ended_at_unix_secs: None,
+                exit_code: None,
+                created_at_unix_secs: 1,
+            }))))
+        }
+
+        fn list_reconnectable_sessions_for_user(
+            &self,
+            user_id: i64,
+        ) -> RepositoryFuture<'_, Vec<TerminalSessionRecord>> {
+            Box::pin(future::ready(Ok(vec![TerminalSessionRecord {
+                id: 1,
+                session_id: "session-1".to_owned(),
+                user_id,
+                node_id: Some("node-1".to_owned()),
+                state: TerminalSessionStateRecord::Detached,
+                started_at_unix_secs: Some(1),
+                ended_at_unix_secs: None,
+                exit_code: None,
+                created_at_unix_secs: 1,
+            }])))
+        }
+    }
 
     #[test]
     fn terminal_repository_marker_maps_to_durable_state() {
@@ -110,5 +193,24 @@ mod tests {
             TerminalSessionMetadataRepositoryBoundary.state_kind(),
             DurableStateKind::TerminalSessionMetadata
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_session_repository_boundary_can_be_mocked() {
+        let repo = MockTerminalSessionRepository;
+        let session = repo
+            .create_terminal_session(TerminalSessionInput {
+                session_id: "session-1".to_owned(),
+                user_id: 7,
+                node_id: Some("node-1".to_owned()),
+                state: TerminalSessionStateRecord::Created,
+                started_at_unix_secs: None,
+            })
+            .await
+            .expect("mock terminal session create succeeds");
+
+        assert_eq!(session.session_id, "session-1");
+        assert_eq!(session.state, TerminalSessionStateRecord::Created);
+        assert_eq!(repo.state_kind(), DurableStateKind::TerminalSessionMetadata);
     }
 }

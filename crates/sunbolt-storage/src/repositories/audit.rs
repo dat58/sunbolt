@@ -57,8 +57,50 @@ impl DurableRepository for AuditEventRepositoryBoundary {
 
 #[cfg(test)]
 mod tests {
-    use super::AuditEventRepositoryBoundary;
-    use crate::repositories::{DurableRepository, DurableStateKind};
+    use std::future;
+
+    use super::{
+        AuditEventInput, AuditEventRecord, AuditEventRepository, AuditEventRepositoryBoundary,
+        AuditEventTarget,
+    };
+    use crate::repositories::{DurableRepository, DurableStateKind, RepositoryFuture};
+
+    struct MockAuditEventRepository;
+
+    impl DurableRepository for MockAuditEventRepository {
+        const STATE_KIND: DurableStateKind = DurableStateKind::AuditEvents;
+    }
+
+    impl AuditEventRepository for MockAuditEventRepository {
+        fn append_event(&self, input: AuditEventInput) -> RepositoryFuture<'_, AuditEventRecord> {
+            Box::pin(future::ready(Ok(AuditEventRecord {
+                id: 1,
+                user_id: input.user_id,
+                event_type: input.event_type,
+                target: input.target,
+                metadata_json: input.metadata_json,
+                ip_address: input.ip_address,
+                created_at_unix_secs: 1,
+            })))
+        }
+
+        fn list_recent_events(&self, limit: u32) -> RepositoryFuture<'_, Vec<AuditEventRecord>> {
+            Box::pin(future::ready(Ok((0..limit)
+                .map(|index| AuditEventRecord {
+                    id: i64::from(index) + 1,
+                    user_id: Some(7),
+                    event_type: "terminal.opened".to_owned(),
+                    target: Some(AuditEventTarget {
+                        target_type: "terminal_session".to_owned(),
+                        target_id: format!("session-{index}"),
+                    }),
+                    metadata_json: None,
+                    ip_address: None,
+                    created_at_unix_secs: i64::from(index) + 1,
+                })
+                .collect())))
+        }
+    }
 
     #[test]
     fn audit_repository_marker_maps_to_durable_state() {
@@ -66,5 +108,26 @@ mod tests {
             AuditEventRepositoryBoundary.state_kind(),
             DurableStateKind::AuditEvents
         );
+    }
+
+    #[tokio::test]
+    async fn audit_event_repository_boundary_can_be_mocked() {
+        let repo = MockAuditEventRepository;
+        let event = repo
+            .append_event(AuditEventInput {
+                user_id: Some(7),
+                event_type: "terminal.opened".to_owned(),
+                target: Some(AuditEventTarget {
+                    target_type: "terminal_session".to_owned(),
+                    target_id: "session-1".to_owned(),
+                }),
+                metadata_json: None,
+                ip_address: Some("127.0.0.1".to_owned()),
+            })
+            .await
+            .expect("mock audit append succeeds");
+
+        assert_eq!(event.event_type, "terminal.opened");
+        assert_eq!(repo.state_kind(), DurableStateKind::AuditEvents);
     }
 }

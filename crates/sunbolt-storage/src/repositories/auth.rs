@@ -298,9 +298,12 @@ mod tests {
     use std::future;
 
     use super::{
-        AuthSessionRepositoryBoundary, MfaFactorRepositoryBoundary, RbacRepositoryBoundary,
-        UserInput, UserRecord, UserRepository, UserRepositoryBoundary, UserRoleRecord,
-        WorkspaceMembershipRepositoryBoundary,
+        AuthSessionInput, AuthSessionRecord, AuthSessionRepository, AuthSessionRepositoryBoundary,
+        MfaFactorInput, MfaFactorKind, MfaFactorRecord, MfaFactorRepository,
+        MfaFactorRepositoryBoundary, MfaRecentVerificationInput, RbacRepository,
+        RbacRepositoryBoundary, UserInput, UserRecord, UserRepository, UserRepositoryBoundary,
+        UserRoleRecord, WorkspaceMemberRecord, WorkspaceMembershipRepositoryBoundary,
+        WorkspaceNodeRecord,
     };
     use crate::repositories::{DurableRepository, DurableStateKind, RepositoryFuture};
 
@@ -341,6 +344,131 @@ mod tests {
         }
     }
 
+    struct MockSessionRepository;
+
+    impl DurableRepository for MockSessionRepository {
+        const STATE_KIND: DurableStateKind = DurableStateKind::AuthSessions;
+    }
+
+    impl AuthSessionRepository for MockSessionRepository {
+        fn find_session_by_token_hash<'a>(
+            &'a self,
+            token_hash: &'a str,
+        ) -> RepositoryFuture<'a, Option<AuthSessionRecord>> {
+            Box::pin(future::ready(Ok(Some(AuthSessionRecord {
+                id: 1,
+                user_id: 7,
+                token_hash: token_hash.to_owned(),
+                ip_address: None,
+                user_agent: None,
+                last_seen_at_unix_secs: Some(10),
+                expires_at_unix_secs: Some(20),
+                created_at_unix_secs: 1,
+            }))))
+        }
+
+        fn create_session(
+            &self,
+            input: AuthSessionInput,
+        ) -> RepositoryFuture<'_, AuthSessionRecord> {
+            Box::pin(future::ready(Ok(AuthSessionRecord {
+                id: 1,
+                user_id: input.user_id,
+                token_hash: input.token_hash,
+                ip_address: input.ip_address,
+                user_agent: input.user_agent,
+                last_seen_at_unix_secs: None,
+                expires_at_unix_secs: input.expires_at_unix_secs,
+                created_at_unix_secs: 1,
+            })))
+        }
+
+        fn delete_session_by_token_hash<'a>(
+            &'a self,
+            _token_hash: &'a str,
+        ) -> RepositoryFuture<'a, ()> {
+            Box::pin(future::ready(Ok(())))
+        }
+    }
+
+    struct MockMfaRepository;
+
+    impl DurableRepository for MockMfaRepository {
+        const STATE_KIND: DurableStateKind = DurableStateKind::MfaFactors;
+    }
+
+    impl MfaFactorRepository for MockMfaRepository {
+        fn list_factors_for_user(
+            &self,
+            user_id: i64,
+        ) -> RepositoryFuture<'_, Vec<MfaFactorRecord>> {
+            Box::pin(future::ready(Ok(vec![MfaFactorRecord {
+                id: 1,
+                user_id,
+                factor_type: MfaFactorKind::Totp,
+                label: "Authenticator".to_owned(),
+                enabled: true,
+                created_at_unix_secs: 1,
+                updated_at_unix_secs: 1,
+            }])))
+        }
+
+        fn upsert_factor(&self, input: MfaFactorInput) -> RepositoryFuture<'_, MfaFactorRecord> {
+            Box::pin(future::ready(Ok(MfaFactorRecord {
+                id: 1,
+                user_id: input.user_id,
+                factor_type: input.factor_type,
+                label: input.label,
+                enabled: input.enabled,
+                created_at_unix_secs: 1,
+                updated_at_unix_secs: 1,
+            })))
+        }
+
+        fn record_recent_verification(
+            &self,
+            _input: MfaRecentVerificationInput,
+        ) -> RepositoryFuture<'_, ()> {
+            Box::pin(future::ready(Ok(())))
+        }
+    }
+
+    struct MockRbacRepository;
+
+    impl DurableRepository for MockRbacRepository {
+        const STATE_KIND: DurableStateKind = DurableStateKind::Rbac;
+    }
+
+    impl RbacRepository for MockRbacRepository {
+        fn permissions_for_user_in_workspace(
+            &self,
+            _user_id: i64,
+            _workspace_id: i64,
+        ) -> RepositoryFuture<'_, Vec<String>> {
+            Box::pin(future::ready(Ok(vec![
+                "node.view".to_owned(),
+                "terminal.open".to_owned(),
+            ])))
+        }
+
+        fn workspace_for_node<'a>(
+            &'a self,
+            node_id: &'a str,
+        ) -> RepositoryFuture<'a, Option<WorkspaceNodeRecord>> {
+            Box::pin(future::ready(Ok(Some(WorkspaceNodeRecord {
+                workspace_id: 1,
+                node_id: node_id.to_owned(),
+            }))))
+        }
+
+        fn upsert_workspace_member(
+            &self,
+            member: WorkspaceMemberRecord,
+        ) -> RepositoryFuture<'_, WorkspaceMemberRecord> {
+            Box::pin(future::ready(Ok(member)))
+        }
+    }
+
     #[test]
     fn auth_repository_markers_map_to_durable_state() {
         assert_eq!(UserRepositoryBoundary.state_kind(), DurableStateKind::Users);
@@ -370,5 +498,54 @@ mod tests {
 
         assert_eq!(user.id, 7);
         assert_eq!(repo.state_kind(), DurableStateKind::Users);
+    }
+
+    #[tokio::test]
+    async fn auth_session_repository_boundary_can_be_mocked() {
+        let repo = MockSessionRepository;
+        let session = repo
+            .create_session(AuthSessionInput {
+                user_id: 7,
+                token_hash: "token-hash".to_owned(),
+                ip_address: Some("127.0.0.1".to_owned()),
+                user_agent: Some("test".to_owned()),
+                expires_at_unix_secs: Some(20),
+            })
+            .await
+            .expect("mock session create succeeds");
+
+        assert_eq!(session.user_id, 7);
+        assert_eq!(session.token_hash, "token-hash");
+        assert_eq!(repo.state_kind(), DurableStateKind::AuthSessions);
+    }
+
+    #[tokio::test]
+    async fn mfa_repository_boundary_can_be_mocked() {
+        let repo = MockMfaRepository;
+        let factors = repo
+            .list_factors_for_user(7)
+            .await
+            .expect("mock factor list succeeds");
+
+        assert_eq!(factors[0].factor_type, MfaFactorKind::Totp);
+        assert_eq!(repo.state_kind(), DurableStateKind::MfaFactors);
+    }
+
+    #[tokio::test]
+    async fn rbac_repository_boundary_can_be_mocked() {
+        let repo = MockRbacRepository;
+        let permissions = repo
+            .permissions_for_user_in_workspace(7, 1)
+            .await
+            .expect("mock permission lookup succeeds");
+        let workspace_node = repo
+            .workspace_for_node("node-1")
+            .await
+            .expect("mock node workspace lookup succeeds")
+            .expect("node has a workspace");
+
+        assert!(permissions.iter().any(|p| p == "terminal.open"));
+        assert_eq!(workspace_node.workspace_id, 1);
+        assert_eq!(repo.state_kind(), DurableStateKind::Rbac);
     }
 }
