@@ -265,12 +265,12 @@ Goal: implement a production transport foundation owned by Sunbolt.
 
 ## Tests
 
-- [ ] Test transport negotiation.
-- [ ] Test heartbeat timeout.
-- [ ] Test agent reconnect.
-- [ ] Test duplicate connection handling.
-- [ ] Test terminal command routing through the baseline transport.
-- [ ] Test backpressure behavior.
+- [x] Test transport negotiation.
+- [x] Test heartbeat timeout.
+- [x] Test agent reconnect.
+- [x] Test duplicate connection handling.
+- [x] Test terminal command routing through the baseline transport.
+- [x] Test backpressure behavior.
 
 ---
 

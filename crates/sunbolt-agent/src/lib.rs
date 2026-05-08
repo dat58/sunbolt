@@ -859,6 +859,10 @@ mod tests {
             plan.client_hello.preferred_transport,
             AgentTransportKind::QuicUdp443
         );
+        assert_eq!(plan.reconnect_policy.delay_for_attempt(0), 1_000);
+        assert_eq!(plan.reconnect_policy.delay_for_attempt(1), 2_000);
+        assert_eq!(plan.reconnect_policy.delay_for_attempt(8), 30_000);
+        assert_eq!(plan.reconnect_policy.resume_window_ms, 120_000);
         assert_eq!(
             hello_envelope.payload,
             AgentTransportPayload::ClientHello {

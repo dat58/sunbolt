@@ -476,12 +476,7 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
                     "agent command channel closed".clone_into(&mut disconnect_reason);
                     break;
                 };
-                let envelope = AgentTransportEnvelope::current(
-                    next_message_id,
-                    handshake.node_id.clone(),
-                    handshake.transport_id.clone(),
-                    AgentTransportPayload::TerminalCommand { command },
-                );
+                let envelope = transport_command_envelope(&handshake, next_message_id, command);
                 next_message_id = next_message_id.next();
                 if send_split_transport_envelope(&mut sender, envelope).await.is_err() {
                     "failed to send terminal command to agent".clone_into(&mut disconnect_reason);
@@ -489,7 +484,7 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
                 }
             }
             _ = liveness_check.tick() => {
-                if last_heartbeat_at.elapsed() >= AGENT_TRANSPORT_LIVENESS_TIMEOUT {
+                if heartbeat_timed_out(last_heartbeat_at, AGENT_TRANSPORT_LIVENESS_TIMEOUT) {
                     "agent transport heartbeat timeout".clone_into(&mut disconnect_reason);
                     break;
                 }
@@ -739,8 +734,16 @@ fn command_envelope(
     long_poll: &LongPollConnectionState,
     command: AgentTerminalCommand,
 ) -> AgentTransportEnvelope {
+    transport_command_envelope(handshake, next_long_poll_message_id(long_poll), command)
+}
+
+fn transport_command_envelope(
+    handshake: &AgentTransportHandshake,
+    message_id: AgentTransportMessageId,
+    command: AgentTerminalCommand,
+) -> AgentTransportEnvelope {
     AgentTransportEnvelope::current(
-        next_long_poll_message_id(long_poll),
+        message_id,
         handshake.node_id.clone(),
         handshake.transport_id.clone(),
         AgentTransportPayload::TerminalCommand { command },
@@ -922,23 +925,31 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+fn heartbeat_timed_out(last_heartbeat_at: Instant, timeout: Duration) -> bool {
+    last_heartbeat_at.elapsed() >= timeout
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_agent_transport_envelope, validate_client_hello,
-        validate_client_hello_for_transport, validate_quic_client_hello,
-        AgentConnectionRegistration, AgentConnectionRegistry, AgentTransportHandshake,
+        handle_agent_transport_envelope, heartbeat_timed_out, negotiate_transport,
+        transport_command_envelope, validate_client_hello, validate_client_hello_for_transport,
+        validate_quic_client_hello, AgentConnectionRegistration, AgentConnectionRegistry,
+        AgentEnrollmentRequest, AgentTransportHandshake,
     };
+    use crate::state::AppState;
+    use std::time::Duration;
+    use sunbolt_auth::{AuthConfig, AuthService, User, UserRole};
     use sunbolt_protocol::{
         transport::{
             AgentTransportClientHello, AgentTransportEnvelope, AgentTransportHeartbeat,
             AgentTransportId, AgentTransportKind, AgentTransportMessageId, AgentTransportPayload,
-            TerminalOutputSequence,
+            AgentTransportReconnectPolicy, TerminalOutputSequence,
         },
         AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalSessionId, TerminalSize,
         PROTOCOL_VERSION,
     };
-    use tokio::sync::mpsc;
+    use tokio::{sync::mpsc, time::Instant};
 
     #[test]
     fn client_hello_requires_supported_protocol_and_websocket_transport() {
@@ -959,6 +970,46 @@ mod tests {
         assert!(
             validate_client_hello_for_transport(&hello, AgentTransportKind::LongPollHttps).is_ok()
         );
+    }
+
+    #[test]
+    fn transport_negotiation_authenticates_node_and_selects_websocket_baseline() {
+        let (state, node_id, credential_fingerprint) = state_with_enrolled_node();
+        let envelope = client_hello_envelope(
+            &node_id,
+            "transport-1",
+            valid_hello_for_credential(&credential_fingerprint),
+        );
+
+        let handshake = negotiate_transport(&state, envelope).expect("negotiation should succeed");
+        let server_hello = handshake.server_hello();
+
+        assert_eq!(handshake.node_id, NodeId(node_id));
+        assert_eq!(
+            handshake.transport_id,
+            AgentTransportId("transport-1".to_owned())
+        );
+        assert_eq!(
+            handshake.selected_transport,
+            AgentTransportKind::WebSocketTlsTcp443
+        );
+        assert_eq!(
+            server_hello.selected_transport,
+            AgentTransportKind::WebSocketTlsTcp443
+        );
+        assert_eq!(
+            server_hello.reconnect_policy,
+            AgentTransportReconnectPolicy::production_default()
+        );
+    }
+
+    #[test]
+    fn heartbeat_timeout_detects_stale_connections_without_waiting() {
+        let stale = Instant::now() - Duration::from_secs(91);
+        let fresh = Instant::now() - Duration::from_secs(30);
+
+        assert!(heartbeat_timed_out(stale, Duration::from_secs(90)));
+        assert!(!heartbeat_timed_out(fresh, Duration::from_secs(90)));
     }
 
     #[test]
@@ -1051,6 +1102,34 @@ mod tests {
     }
 
     #[test]
+    fn baseline_transport_command_routing_wraps_terminal_commands() {
+        let handshake = AgentTransportHandshake {
+            node_id: NodeId("node-1".to_owned()),
+            transport_id: AgentTransportId("transport-1".to_owned()),
+            selected_transport: AgentTransportKind::WebSocketTlsTcp443,
+        };
+        let command = AgentTerminalCommand::StartTerminal {
+            session_id: TerminalSessionId("session-1".to_owned()),
+            size: TerminalSize {
+                cols: 100,
+                rows: 30,
+            },
+        };
+
+        let envelope =
+            transport_command_envelope(&handshake, AgentTransportMessageId(9), command.clone());
+
+        assert_eq!(envelope.message_id, AgentTransportMessageId(9));
+        assert_eq!(envelope.node_id, handshake.node_id);
+        assert_eq!(envelope.transport_id, handshake.transport_id);
+        assert_eq!(
+            envelope.payload,
+            AgentTransportPayload::TerminalCommand { command }
+        );
+        assert!(envelope.validate().is_ok());
+    }
+
+    #[test]
     fn transport_envelope_accepts_heartbeat_ping() {
         let handshake = AgentTransportHandshake {
             node_id: NodeId("node-1".to_owned()),
@@ -1080,7 +1159,35 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn transport_backpressure_rejects_full_terminal_event_channel() {
+        let handshake = AgentTransportHandshake {
+            node_id: NodeId("node-1".to_owned()),
+            transport_id: AgentTransportId("transport-1".to_owned()),
+            selected_transport: AgentTransportKind::WebSocketTlsTcp443,
+        };
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let first = terminal_output_envelope(&handshake, AgentTransportMessageId(1));
+        let second = terminal_output_envelope(&handshake, AgentTransportMessageId(2));
+
+        handle_agent_transport_envelope(&handshake, first, &event_tx)
+            .expect("first event should fit in the bounded channel");
+        let error = handle_agent_transport_envelope(&handshake, second, &event_tx)
+            .expect_err("second event should hit the backpressure limit");
+
+        assert_eq!(
+            error.code,
+            super::AgentTransportErrorCode::BackpressureLimitExceeded
+        );
+    }
+
     fn valid_hello() -> AgentTransportClientHello {
+        valid_hello_for_credential("dev-fingerprint")
+    }
+
+    fn valid_hello_for_credential(
+        credential_fingerprint: impl Into<String>,
+    ) -> AgentTransportClientHello {
         AgentTransportClientHello {
             supported_protocol_versions: vec![PROTOCOL_VERSION],
             supported_transports: vec![
@@ -1090,9 +1197,73 @@ mod tests {
             ],
             preferred_transport: AgentTransportKind::QuicUdp443,
             agent_version: "0.1.0".to_owned(),
-            credential_fingerprint: "dev-fingerprint".to_owned(),
+            credential_fingerprint: credential_fingerprint.into(),
             resume: None,
         }
+    }
+
+    fn terminal_output_envelope(
+        handshake: &AgentTransportHandshake,
+        message_id: AgentTransportMessageId,
+    ) -> AgentTransportEnvelope {
+        AgentTransportEnvelope::current(
+            message_id,
+            handshake.node_id.clone(),
+            handshake.transport_id.clone(),
+            AgentTransportPayload::TerminalEvent {
+                sequence: Some(TerminalOutputSequence::first()),
+                event: AgentTerminalEvent::TerminalOutput {
+                    session_id: TerminalSessionId("session-1".to_owned()),
+                    data: "hello\n".to_owned(),
+                },
+            },
+        )
+    }
+
+    fn client_hello_envelope(
+        node_id: &str,
+        transport_id: &str,
+        hello: AgentTransportClientHello,
+    ) -> AgentTransportEnvelope {
+        AgentTransportEnvelope::current(
+            AgentTransportMessageId::first(),
+            NodeId(node_id.to_owned()),
+            AgentTransportId(transport_id.to_owned()),
+            AgentTransportPayload::ClientHello { hello },
+        )
+    }
+
+    fn state_with_enrolled_node() -> (AppState, String, String) {
+        let state = AppState::development_with_auth(AuthService::new(AuthConfig {
+            session_ttl: Duration::from_secs(60 * 60),
+            recent_mfa_ttl: Duration::from_secs(10 * 60),
+            secure_cookie: false,
+            require_step_up_mfa_for_terminal: true,
+            bootstrap_admin: false,
+            admin_email: "unused@example.com".to_owned(),
+            admin_password: "unused".to_owned(),
+        }));
+        let token = state.node_enrollment.create_token(
+            &User {
+                id: 1,
+                email: "admin@example.com".to_owned(),
+                role: UserRole::Admin,
+            },
+            Duration::from_secs(300),
+        );
+        let enrollment = state
+            .node_enrollment
+            .enroll(AgentEnrollmentRequest {
+                token: token.token,
+                node_name: "node-a".to_owned(),
+                hostname: "host-a".to_owned(),
+                os: "linux".to_owned(),
+                architecture: "x86_64".to_owned(),
+                agent_version: "0.1.0".to_owned(),
+            })
+            .expect("node should enroll");
+
+        (state, enrollment.node_id, enrollment.credential_fingerprint)
     }
 
     #[allow(dead_code)]
