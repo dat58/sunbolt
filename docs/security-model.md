@@ -77,7 +77,10 @@ During enrollment, the control plane consumes the one-time token, creates the
 stable node ID, generates node credential material, stores only the credential
 fingerprint and expiration metadata, and returns the credential secret once to
 the agent. The agent persists that identity material on the node host and reuses
-it for later heartbeats and transport negotiation.
+it for later heartbeats and transport negotiation. For the current shared-secret
+identity model, the agent sends a derived credential proof instead of the raw
+secret; unknown nodes, expired credentials, invalid proofs, and revoked nodes
+are rejected.
 
 Production node identity should support:
 

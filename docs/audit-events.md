@@ -48,6 +48,7 @@ Agent and transport audit events should include:
 
 - `agent.connected`
 - `agent.disconnected`
+- `agent.authentication.failed`
 - `agent.transport.negotiated`
 - `route.selected`
 - `route.failed`

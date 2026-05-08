@@ -17,6 +17,7 @@ pub enum AuditEventKind {
     TransportNegotiated,
     AgentConnected,
     AgentDisconnected,
+    AgentAuthenticationFailed,
     NodeEnrolled,
     NodeRevoked,
 }
@@ -40,6 +41,7 @@ impl AuditEventKind {
             Self::TransportNegotiated => "transport.negotiated",
             Self::AgentConnected => "agent.connected",
             Self::AgentDisconnected => "agent.disconnected",
+            Self::AgentAuthenticationFailed => "agent.authentication.failed",
             Self::NodeEnrolled => "node.enrolled",
             Self::NodeRevoked => "node.revoked",
         }
@@ -131,6 +133,10 @@ mod tests {
         assert_eq!(
             AuditEventKind::AgentDisconnected.as_str(),
             "agent.disconnected"
+        );
+        assert_eq!(
+            AuditEventKind::AgentAuthenticationFailed.as_str(),
+            "agent.authentication.failed"
         );
         assert_eq!(AuditEventKind::NodeEnrolled.as_str(), "node.enrolled");
         assert_eq!(AuditEventKind::NodeRevoked.as_str(), "node.revoked");

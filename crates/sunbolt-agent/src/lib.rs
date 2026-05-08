@@ -203,6 +203,7 @@ pub enum AgentHeartbeatStatus {
 pub struct AgentHeartbeatMessage {
     pub node_id: String,
     pub credential_fingerprint: String,
+    pub credential_proof: String,
     pub hostname: String,
     pub os: String,
     pub architecture: String,
@@ -215,10 +216,13 @@ impl AgentHeartbeatMessage {
     pub fn from_node_identity(
         node_id: impl Into<String>,
         credential_fingerprint: impl Into<String>,
+        credential_secret: &str,
         node_info: &LocalNodeInfo,
     ) -> Self {
+        let node_id = node_id.into();
         Self {
-            node_id: node_id.into(),
+            credential_proof: credential_proof(&node_id, credential_secret),
+            node_id,
             credential_fingerprint: credential_fingerprint.into(),
             hostname: node_info.hostname.clone(),
             os: node_info.os.clone(),
@@ -253,6 +257,7 @@ impl AgentConnection {
             heartbeat: AgentHeartbeatMessage::from_node_identity(
                 identity.node_id.clone(),
                 identity.credential_fingerprint.clone(),
+                &identity.credential_secret,
                 node_info,
             ),
         }
@@ -304,6 +309,7 @@ impl AgentConnection {
             preferred_transport: AgentTransportKind::QuicUdp443,
             agent_version: self.heartbeat.agent_version.clone(),
             credential_fingerprint: self.heartbeat.credential_fingerprint.clone(),
+            credential_proof: self.heartbeat.credential_proof.clone(),
             resume: None,
         }
     }
@@ -765,6 +771,10 @@ fn credential_fingerprint(secret: &str) -> String {
     fingerprint
 }
 
+fn credential_proof(node_id: &str, secret: &str) -> String {
+    credential_fingerprint(&format!("sunbolt-agent-auth-v1\0{node_id}\0{secret}"))
+}
+
 fn restrict_directory_permissions(path: &Path) -> Result<(), AgentError> {
     #[cfg(unix)]
     {
@@ -820,10 +830,11 @@ fn hostname_from_lookup(lookup: &mut impl FnMut(&str) -> Option<String>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        component_name, credential_fingerprint, quic_url_for_path, websocket_url_for_path,
-        AgentConfig, AgentConnection, AgentEnrollmentRequest, AgentEnrollmentResponse,
-        AgentHeartbeatMessage, AgentHeartbeatStatus, AgentNodeIdentity, AgentOutboundTransportPlan,
-        AgentRuntime, AgentTerminalRuntime, LocalNodeInfo, LogLevel, DEFAULT_CONTROL_PLANE_URL,
+        component_name, credential_fingerprint, credential_proof, quic_url_for_path,
+        websocket_url_for_path, AgentConfig, AgentConnection, AgentEnrollmentRequest,
+        AgentEnrollmentResponse, AgentHeartbeatMessage, AgentHeartbeatStatus, AgentNodeIdentity,
+        AgentOutboundTransportPlan, AgentRuntime, AgentTerminalRuntime, LocalNodeInfo, LogLevel,
+        DEFAULT_CONTROL_PLANE_URL,
     };
     use std::path::PathBuf;
     use sunbolt_protocol::{
@@ -897,11 +908,19 @@ mod tests {
             agent_version: "0.1.0".to_owned(),
         };
 
-        let heartbeat =
-            AgentHeartbeatMessage::from_node_identity("node-1", "dev-fingerprint", &info);
+        let heartbeat = AgentHeartbeatMessage::from_node_identity(
+            "node-1",
+            "dev-fingerprint",
+            "dev-secret",
+            &info,
+        );
 
         assert_eq!(heartbeat.node_id, "node-1");
         assert_eq!(heartbeat.credential_fingerprint, "dev-fingerprint");
+        assert_eq!(
+            heartbeat.credential_proof,
+            credential_proof("node-1", "dev-secret")
+        );
         assert_eq!(heartbeat.hostname, "host-a");
         assert_eq!(heartbeat.status, AgentHeartbeatStatus::Online);
         assert_eq!(AgentHeartbeatMessage::endpoint_path(), "/agent/heartbeat");

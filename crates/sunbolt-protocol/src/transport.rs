@@ -351,6 +351,7 @@ pub struct AgentTransportClientHello {
     pub preferred_transport: AgentTransportKind,
     pub agent_version: String,
     pub credential_fingerprint: String,
+    pub credential_proof: String,
     pub resume: Option<AgentTransportResumeRequest>,
 }
 
@@ -719,6 +720,7 @@ mod tests {
                     preferred_transport: AgentTransportKind::WebSocketTlsTcp443,
                     agent_version: "0.1.0".to_owned(),
                     credential_fingerprint: "dev-fingerprint".to_owned(),
+                    credential_proof: "dev-proof".to_owned(),
                     resume: None,
                 },
             },
@@ -741,6 +743,7 @@ mod tests {
                         "preferred_transport": "web_socket_tls_tcp443",
                         "agent_version": "0.1.0",
                         "credential_fingerprint": "dev-fingerprint",
+                        "credential_proof": "dev-proof",
                         "resume": null
                     }
                 }

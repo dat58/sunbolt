@@ -60,6 +60,7 @@ mod tests {
     };
     use serde_json::{json, Value};
     use std::{process::Command, sync::Arc, time::Duration};
+    use sunbolt_audit::AuditEventKind;
     use sunbolt_auth::{AuthConfig, AuthService, SESSION_COOKIE_NAME};
     use sunbolt_protocol::{
         AgentTerminalCommand, AgentTerminalEvent, TerminalClientMessage, TerminalError,
@@ -726,6 +727,7 @@ mod tests {
                         json!({
                             "node_id": enrollment.node_id,
                             "credential_fingerprint": enrollment.credential_fingerprint,
+                            "credential_proof": enrollment.credential_proof(),
                             "hostname": "host-a",
                             "os": "linux",
                             "architecture": "x86_64",
@@ -756,6 +758,42 @@ mod tests {
             .expect("response body should be readable");
         let payload: Value = serde_json::from_slice(&body).expect("body should parse");
         assert_eq!(payload["nodes"][0]["status"], "online");
+    }
+
+    #[tokio::test]
+    async fn failed_agent_heartbeat_authentication_is_audited() {
+        let (router, state) = test_router_and_state();
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+        let enrollment = enroll_test_agent(&router, &cookie).await;
+
+        let heartbeat_response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AGENT_HEARTBEAT_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "node_id": enrollment.node_id,
+                            "credential_fingerprint": enrollment.credential_fingerprint,
+                            "credential_proof": "wrong-proof",
+                            "hostname": "host-a",
+                            "os": "linux",
+                            "architecture": "x86_64",
+                            "agent_version": "0.1.0"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(heartbeat_response.status(), StatusCode::UNAUTHORIZED);
+        assert!(state.audit.events().iter().any(|event| {
+            event.kind == AuditEventKind::AgentAuthenticationFailed
+                && event.message.contains("invalid credential")
+        }));
     }
 
     #[tokio::test]
@@ -802,6 +840,7 @@ mod tests {
                         json!({
                             "node_id": enrollment.node_id,
                             "credential_fingerprint": enrollment.credential_fingerprint,
+                            "credential_proof": enrollment.credential_proof(),
                             "hostname": "host-a",
                             "os": "linux",
                             "architecture": "x86_64",
@@ -964,12 +1003,21 @@ mod tests {
     }
 
     fn test_router_with_origins(allowed_origins: Vec<String>) -> axum::Router {
+        let state = test_state_with_origins(allowed_origins);
+        build_router(state)
+    }
+
+    fn test_router_and_state() -> (axum::Router, AppState) {
+        let state = test_state_with_origins(vec![]);
+        (build_router(state.clone()), state)
+    }
+
+    fn test_state_with_origins(allowed_origins: Vec<String>) -> AppState {
         let mut state = AppState::development_with_auth(test_auth_service());
         state.login_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
         state.terminal_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
         state.allowed_origins = allowed_origins;
-
-        build_router(state)
+        state
     }
 
     fn test_auth_service() -> AuthService {
@@ -1000,6 +1048,13 @@ mod tests {
     struct TestEnrollment {
         node_id: String,
         credential_fingerprint: String,
+        credential_secret: String,
+    }
+
+    impl TestEnrollment {
+        fn credential_proof(&self) -> String {
+            crate::agent::credential_proof(&self.node_id, &self.credential_secret)
+        }
     }
 
     async fn enroll_test_agent(router: &axum::Router, cookie: &str) -> TestEnrollment {
@@ -1059,6 +1114,10 @@ mod tests {
             credential_fingerprint: payload["credential_fingerprint"]
                 .as_str()
                 .expect("credential fingerprint should be present")
+                .to_owned(),
+            credential_secret: payload["credential_secret"]
+                .as_str()
+                .expect("credential secret should be present")
                 .to_owned(),
         }
     }

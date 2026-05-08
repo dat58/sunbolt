@@ -265,6 +265,7 @@ pub(crate) struct AgentEnrollmentResponse {
 pub(crate) struct AgentHeartbeatRequest {
     pub(crate) node_id: String,
     pub(crate) credential_fingerprint: String,
+    pub(crate) credential_proof: String,
     pub(crate) hostname: String,
     pub(crate) os: String,
     pub(crate) architecture: String,
@@ -281,6 +282,10 @@ pub(crate) fn generate_node_credential() -> (String, String) {
     let secret = crate::security::random_token();
     let fingerprint = credential_fingerprint(&secret);
     (secret, fingerprint)
+}
+
+pub(crate) fn credential_proof(node_id: &str, secret: &str) -> String {
+    credential_fingerprint(&format!("sunbolt-agent-auth-v1\0{node_id}\0{secret}"))
 }
 
 pub(crate) fn credential_fingerprint(secret: &str) -> String {
@@ -316,25 +321,35 @@ pub(crate) async fn agent_transport_long_poll(
     State(state): State<AppState>,
     Json(request): Json<AgentTransportLongPollRequest>,
 ) -> impl IntoResponse {
+    let failed_node_id = request.client_hello.node_id.clone();
+    let failed_transport_id = request.client_hello.transport_id.clone();
     match handle_agent_transport_long_poll_request(&state, request).await {
         Ok(response) => Json(response).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(AgentTransportLongPollResponse {
-                envelopes: vec![AgentTransportEnvelope::current(
-                    AgentTransportMessageId::first(),
-                    NodeId("unknown".to_owned()),
-                    AgentTransportId("unknown".to_owned()),
-                    AgentTransportPayload::Error {
-                        error: transport_error_for_connection(error),
-                    },
-                )],
-                retry_after_ms: millis(AGENT_TRANSPORT_LONG_POLL_RETRY),
-                degraded: true,
-                degraded_reason: Some(LONG_POLL_DEGRADED_REASON.to_owned()),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            record_agent_transport_authentication_failure(
+                &state,
+                &failed_node_id,
+                &failed_transport_id,
+                error,
+            );
+            (
+                StatusCode::BAD_REQUEST,
+                Json(AgentTransportLongPollResponse {
+                    envelopes: vec![AgentTransportEnvelope::current(
+                        AgentTransportMessageId::first(),
+                        failed_node_id,
+                        failed_transport_id,
+                        AgentTransportPayload::Error {
+                            error: transport_error_for_connection(error),
+                        },
+                    )],
+                    retry_after_ms: millis(AGENT_TRANSPORT_LONG_POLL_RETRY),
+                    degraded: true,
+                    degraded_reason: Some(LONG_POLL_DEGRADED_REASON.to_owned()),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -343,16 +358,36 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
     let Some(Ok(first_message)) = socket.recv().await else {
         return;
     };
-    let handshake = match parse_transport_envelope(first_message)
-        .and_then(|envelope| negotiate_transport(&state, envelope))
-    {
-        Ok(handshake) => handshake,
+    let first_envelope = match parse_transport_envelope(first_message) {
+        Ok(envelope) => envelope,
         Err(error) => {
             let _ = send_transport_error(
                 &mut socket,
                 AgentTransportMessageId::first(),
                 NodeId("unknown".to_owned()),
                 AgentTransportId("unknown".to_owned()),
+                transport_error_for_connection(error),
+            )
+            .await;
+            return;
+        }
+    };
+    let failed_node_id = first_envelope.node_id.clone();
+    let failed_transport_id = first_envelope.transport_id.clone();
+    let handshake = match negotiate_transport(&state, first_envelope) {
+        Ok(handshake) => handshake,
+        Err(error) => {
+            record_agent_transport_authentication_failure(
+                &state,
+                &failed_node_id,
+                &failed_transport_id,
+                error,
+            );
+            let _ = send_transport_error(
+                &mut socket,
+                AgentTransportMessageId::first(),
+                failed_node_id,
+                failed_transport_id,
                 transport_error_for_connection(error),
             )
             .await;
@@ -791,6 +826,7 @@ fn authenticate_transport_client(
         .authenticate_transport(
             &node_id.0,
             &hello.credential_fingerprint,
+            &hello.credential_proof,
             &hello.agent_version,
         )
         .map_err(|error| match error {
@@ -801,6 +837,45 @@ fn authenticate_transport_client(
             }
             NodeConnectionError::Revoked => AgentTransportConnectionError::Revoked,
         })
+}
+
+fn record_agent_transport_authentication_failure(
+    state: &AppState,
+    node_id: &NodeId,
+    transport_id: &AgentTransportId,
+    error: AgentTransportConnectionError,
+) {
+    if !matches!(
+        error,
+        AgentTransportConnectionError::AuthenticationFailed
+            | AgentTransportConnectionError::Revoked
+    ) {
+        return;
+    }
+
+    state.audit.record(AuditEventInput {
+        kind: AuditEventKind::AgentAuthenticationFailed,
+        actor_email: None,
+        message: format!(
+            "agent transport authentication failed for node {} on transport {}: {}",
+            node_id.0,
+            transport_id.0,
+            agent_transport_authentication_failure_reason(error)
+        ),
+    });
+}
+
+const fn agent_transport_authentication_failure_reason(
+    error: AgentTransportConnectionError,
+) -> &'static str {
+    match error {
+        AgentTransportConnectionError::AuthenticationFailed => "invalid node identity",
+        AgentTransportConnectionError::Revoked => "node revoked",
+        AgentTransportConnectionError::MissingClientHello
+        | AgentTransportConnectionError::InvalidEnvelope
+        | AgentTransportConnectionError::UnsupportedProtocolVersion
+        | AgentTransportConnectionError::UnsupportedTransport => "not an authentication failure",
+    }
 }
 
 fn handle_agent_transport_envelope(
@@ -955,13 +1030,15 @@ fn heartbeat_timed_out(last_heartbeat_at: Instant, timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_agent_transport_envelope, heartbeat_timed_out, negotiate_transport,
+        credential_proof, handle_agent_transport_envelope, heartbeat_timed_out,
+        negotiate_transport, record_agent_transport_authentication_failure,
         transport_command_envelope, validate_client_hello, validate_client_hello_for_transport,
         validate_quic_client_hello, AgentConnectionRegistration, AgentConnectionRegistry,
         AgentEnrollmentRequest, AgentTransportHandshake,
     };
-    use crate::state::AppState;
+    use crate::{error::AgentTransportConnectionError, state::AppState};
     use std::time::Duration;
+    use sunbolt_audit::AuditEventKind;
     use sunbolt_auth::{AuthConfig, AuthService, User, UserRole};
     use sunbolt_protocol::{
         transport::{
@@ -997,11 +1074,15 @@ mod tests {
 
     #[test]
     fn transport_negotiation_authenticates_node_and_selects_websocket_baseline() {
-        let (state, node_id, credential_fingerprint) = state_with_enrolled_node();
+        let (state, node_id, credential_fingerprint, credential_secret) =
+            state_with_enrolled_node();
         let envelope = client_hello_envelope(
             &node_id,
             "transport-1",
-            valid_hello_for_credential(&credential_fingerprint),
+            valid_hello_for_credential(
+                &credential_fingerprint,
+                credential_proof(&node_id, &credential_secret),
+            ),
         );
 
         let handshake = negotiate_transport(&state, envelope).expect("negotiation should succeed");
@@ -1024,6 +1105,120 @@ mod tests {
             server_hello.reconnect_policy,
             AgentTransportReconnectPolicy::production_default()
         );
+    }
+
+    #[test]
+    fn transport_negotiation_rejects_unknown_node_identity() {
+        let (_state_with_node, _node_id, credential_fingerprint, credential_secret) =
+            state_with_enrolled_node();
+        let state = AppState::development_with_auth(AuthService::new(AuthConfig {
+            session_ttl: Duration::from_secs(60 * 60),
+            recent_mfa_ttl: Duration::from_secs(10 * 60),
+            secure_cookie: false,
+            require_step_up_mfa_for_terminal: true,
+            bootstrap_admin: false,
+            admin_email: "unused@example.com".to_owned(),
+            admin_password: "unused".to_owned(),
+        }));
+        let envelope = client_hello_envelope(
+            "node-missing",
+            "transport-1",
+            valid_hello_for_credential(
+                &credential_fingerprint,
+                credential_proof("node-missing", &credential_secret),
+            ),
+        );
+
+        let error = negotiate_transport(&state, envelope)
+            .expect_err("unknown node identity should be rejected");
+
+        assert_eq!(error, AgentTransportConnectionError::AuthenticationFailed);
+    }
+
+    #[test]
+    fn transport_negotiation_rejects_invalid_credential_proof() {
+        let (state, node_id, credential_fingerprint, _credential_secret) =
+            state_with_enrolled_node();
+        let envelope = client_hello_envelope(
+            &node_id,
+            "transport-1",
+            valid_hello_for_credential(&credential_fingerprint, "wrong-proof"),
+        );
+
+        let error = negotiate_transport(&state, envelope)
+            .expect_err("invalid credential proof should be rejected");
+
+        assert_eq!(error, AgentTransportConnectionError::AuthenticationFailed);
+    }
+
+    #[test]
+    fn transport_negotiation_rejects_expired_credential() {
+        let (state, node_id, credential_fingerprint, credential_secret) =
+            state_with_enrolled_node();
+        assert!(state.node_enrollment.expire_credentials_for_node(&node_id));
+        let envelope = client_hello_envelope(
+            &node_id,
+            "transport-1",
+            valid_hello_for_credential(
+                &credential_fingerprint,
+                credential_proof(&node_id, &credential_secret),
+            ),
+        );
+
+        let error = negotiate_transport(&state, envelope)
+            .expect_err("expired credential should be rejected");
+
+        assert_eq!(error, AgentTransportConnectionError::AuthenticationFailed);
+    }
+
+    #[test]
+    fn transport_negotiation_rejects_revoked_node() {
+        let (state, node_id, credential_fingerprint, credential_secret) =
+            state_with_enrolled_node();
+        state
+            .node_enrollment
+            .revoke_node(&node_id)
+            .expect("node should revoke");
+        let envelope = client_hello_envelope(
+            &node_id,
+            "transport-1",
+            valid_hello_for_credential(
+                &credential_fingerprint,
+                credential_proof(&node_id, &credential_secret),
+            ),
+        );
+
+        let error =
+            negotiate_transport(&state, envelope).expect_err("revoked node should be rejected");
+
+        assert_eq!(error, AgentTransportConnectionError::Revoked);
+    }
+
+    #[test]
+    fn failed_transport_authentication_is_audited() {
+        let (state, node_id, credential_fingerprint, _credential_secret) =
+            state_with_enrolled_node();
+        let envelope = client_hello_envelope(
+            &node_id,
+            "transport-1",
+            valid_hello_for_credential(&credential_fingerprint, "wrong-proof"),
+        );
+        let failed_node_id = envelope.node_id.clone();
+        let failed_transport_id = envelope.transport_id.clone();
+        let error = negotiate_transport(&state, envelope)
+            .expect_err("invalid credential proof should be rejected");
+
+        record_agent_transport_authentication_failure(
+            &state,
+            &failed_node_id,
+            &failed_transport_id,
+            error,
+        );
+
+        assert!(state.audit.events().iter().any(|event| {
+            event.kind == AuditEventKind::AgentAuthenticationFailed
+                && event.message.contains("invalid node identity")
+        }));
     }
 
     #[test]
@@ -1205,11 +1400,12 @@ mod tests {
     }
 
     fn valid_hello() -> AgentTransportClientHello {
-        valid_hello_for_credential("dev-fingerprint")
+        valid_hello_for_credential("dev-fingerprint", "dev-proof")
     }
 
     fn valid_hello_for_credential(
         credential_fingerprint: impl Into<String>,
+        credential_proof: impl Into<String>,
     ) -> AgentTransportClientHello {
         AgentTransportClientHello {
             supported_protocol_versions: vec![PROTOCOL_VERSION],
@@ -1221,6 +1417,7 @@ mod tests {
             preferred_transport: AgentTransportKind::QuicUdp443,
             agent_version: "0.1.0".to_owned(),
             credential_fingerprint: credential_fingerprint.into(),
+            credential_proof: credential_proof.into(),
             resume: None,
         }
     }
@@ -1256,7 +1453,7 @@ mod tests {
         )
     }
 
-    fn state_with_enrolled_node() -> (AppState, String, String) {
+    fn state_with_enrolled_node() -> (AppState, String, String, String) {
         let state = AppState::development_with_auth(AuthService::new(AuthConfig {
             session_ttl: Duration::from_secs(60 * 60),
             recent_mfa_ttl: Duration::from_secs(10 * 60),
@@ -1286,7 +1483,12 @@ mod tests {
             })
             .expect("node should enroll");
 
-        (state, enrollment.node_id, enrollment.credential_fingerprint)
+        (
+            state,
+            enrollment.node_id,
+            enrollment.credential_fingerprint,
+            enrollment.credential_secret,
+        )
     }
 
     #[allow(dead_code)]

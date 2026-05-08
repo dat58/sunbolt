@@ -290,11 +290,11 @@ Goal: move from enrollment-token bootstrap to production node trust.
 
 ## Authentication
 
-- [ ] Authenticate every agent connection using durable node identity.
-- [ ] Reject unknown node identity.
-- [ ] Reject expired node credentials.
-- [ ] Reject revoked nodes.
-- [ ] Audit failed agent authentication.
+- [x] Authenticate every agent connection using durable node identity.
+- [x] Reject unknown node identity.
+- [x] Reject expired node credentials.
+- [x] Reject revoked nodes.
+- [x] Audit failed agent authentication.
 
 ## Rotation and Revocation
 

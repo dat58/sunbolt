@@ -12,8 +12,9 @@ use sunbolt_auth::User;
 
 use crate::{
     agent::{
-        credential_expiration_unix_secs, generate_node_credential, AgentEnrollmentRequest,
-        AgentEnrollmentResponse, AgentHeartbeatRequest, NODE_CREDENTIAL_TTL,
+        credential_expiration_unix_secs, credential_proof, generate_node_credential,
+        AgentEnrollmentRequest, AgentEnrollmentResponse, AgentHeartbeatRequest,
+        NODE_CREDENTIAL_TTL,
     },
     config::NODE_OFFLINE_AFTER,
     error::{EnrollmentError, NodeConnectionError},
@@ -78,6 +79,7 @@ pub(crate) enum NodeStatus {
 struct NodeCredentialRecord {
     node_id: u64,
     credential_fingerprint: String,
+    credential_proof: String,
     expires_at: Instant,
     expires_at_unix_secs: i64,
 }
@@ -177,6 +179,7 @@ impl NodeEnrollmentRegistry {
         state.credentials.push(NodeCredentialRecord {
             node_id: id,
             credential_fingerprint: credential_fingerprint.clone(),
+            credential_proof: credential_proof(&node_id, &credential_secret),
             expires_at: credential_expires_at,
             expires_at_unix_secs: credential_expires_at_unix_secs,
         });
@@ -211,10 +214,12 @@ impl NodeEnrollmentRegistry {
         if node.status == NodeStatus::Revoked {
             return Err(NodeConnectionError::Revoked);
         }
-        let Some(credential) = state.credentials.iter().find(|credential| {
-            credential.node_id == node.id
-                && credential.credential_fingerprint == request.credential_fingerprint
-        }) else {
+        let Some(credential) = authenticated_credential(
+            &state,
+            node.id,
+            &request.credential_proof,
+            &request.credential_fingerprint,
+        ) else {
             return Err(NodeConnectionError::InvalidCredential);
         };
         if credential.expires_at <= Instant::now() {
@@ -244,6 +249,7 @@ impl NodeEnrollmentRegistry {
         &self,
         node_id: &str,
         credential_fingerprint: &str,
+        credential_proof: &str,
         agent_version: &str,
     ) -> Result<NodeView, NodeConnectionError> {
         let mut state = self
@@ -259,10 +265,9 @@ impl NodeEnrollmentRegistry {
         if node.status == NodeStatus::Revoked {
             return Err(NodeConnectionError::Revoked);
         }
-        let Some(credential) = state.credentials.iter().find(|credential| {
-            credential.node_id == node.id
-                && credential.credential_fingerprint == credential_fingerprint
-        }) else {
+        let Some(credential) =
+            authenticated_credential(&state, node.id, credential_proof, credential_fingerprint)
+        else {
             return Err(NodeConnectionError::InvalidCredential);
         };
         if credential.expires_at <= Instant::now() {
@@ -344,6 +349,35 @@ impl NodeEnrollmentRegistry {
         self.node_details(node_id)
             .is_some_and(|node| node.status == NodeStatus::Online)
     }
+
+    #[cfg(test)]
+    pub(crate) fn expire_credentials_for_node(&self, node_id: &str) -> bool {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(node_pk) = state
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .map(|node| node.id)
+        else {
+            return false;
+        };
+        let mut expired = false;
+        let expired_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        for credential in state
+            .credentials
+            .iter_mut()
+            .filter(|credential| credential.node_id == node_pk)
+        {
+            credential.expires_at = expired_at;
+            expired = true;
+        }
+        expired
+    }
 }
 
 fn latest_heartbeat_at(state: &NodeEnrollmentState, node_id: u64) -> Option<Instant> {
@@ -353,6 +387,19 @@ fn latest_heartbeat_at(state: &NodeEnrollmentState, node_id: u64) -> Option<Inst
         .filter(|heartbeat| heartbeat.node_id == node_id && heartbeat.status != NodeStatus::Revoked)
         .max_by_key(|heartbeat| heartbeat.received_at)
         .map(|heartbeat| heartbeat.received_at)
+}
+
+fn authenticated_credential<'a>(
+    state: &'a NodeEnrollmentState,
+    node_id: u64,
+    presented_proof: &str,
+    claimed_fingerprint: &str,
+) -> Option<&'a NodeCredentialRecord> {
+    state.credentials.iter().find(|credential| {
+        credential.node_id == node_id
+            && credential.credential_fingerprint == claimed_fingerprint
+            && credential.credential_proof == presented_proof
+    })
 }
 
 fn credential_expiration_for_node(state: &NodeEnrollmentState, node_id: u64) -> Option<i64> {
