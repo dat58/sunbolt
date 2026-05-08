@@ -91,7 +91,7 @@ Common local control-plane variables:
 - `SUNBOLT_ALLOWED_ORIGINS`: comma-separated browser origins allowed for state-changing routes and WebSocket origin checks.
 - `SUNBOLT_DEV_BOOTSTRAP_ADMIN`: enables the local bootstrap admin when `true`, default `true`.
 - `SUNBOLT_DEV_ADMIN_EMAIL`: bootstrap admin email, default `admin@sunbolt.local`.
-- `SUNBOLT_DEV_ADMIN_PASSWORD`: bootstrap admin password, default `sunbolt-dev-password`.
+- `SUNBOLT_DEV_ADMIN_PASSWORD`: bootstrap admin password, default `sunbolt-dev-admin`.
 - `SUNBOLT_REQUIRE_TERMINAL_STEP_UP_MFA`: requires recent MFA before terminal open when `true`, default `true`.
 - `SUNBOLT_TERMINAL_IDLE_TIMEOUT_SECS`: terminal idle timeout.
 - `SUNBOLT_TERMINAL_DISCONNECT_GRACE_SECS`: detach grace window for short browser disconnects.

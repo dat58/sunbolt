@@ -39,7 +39,7 @@ curl -sS \
   -c "$COOKIE_JAR" \
   -H 'content-type: application/json' \
   -X POST http://127.0.0.1:3000/auth/login \
-  -d '{"email":"admin@sunbolt.local","password":"sunbolt-dev-password"}'
+  -d '{"email":"admin@sunbolt.local","password":"sunbolt-dev-admin"}'
 
 TOKEN="$(
   curl -sS \
