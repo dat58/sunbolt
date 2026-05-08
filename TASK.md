@@ -94,17 +94,17 @@ Goal: split large control-plane implementation into maintainable modules without
 
 ## Module Structure
 
-- [ ] Split `sunbolt-control` config loading into `config.rs`.
-- [ ] Split control-plane error types into `error.rs`.
-- [ ] Split route construction into `routes/`.
-- [ ] Split application state into `state.rs`.
-- [ ] Split auth middleware and request extraction into `auth.rs` or `routes/auth.rs`.
-- [ ] Split terminal WebSocket orchestration into `terminal/`.
-- [ ] Split terminal session registry logic into `terminal/session_registry.rs`.
-- [ ] Split agent enrollment and heartbeat logic into `agent/`.
-- [ ] Split node management and revocation logic into `node/`.
-- [ ] Split audit integration helpers into `audit.rs`.
-- [ ] Keep `lib.rs` focused on module declarations and public re-exports.
+- [x] Split `sunbolt-control` config loading into `config.rs`.
+- [x] Split control-plane error types into `error.rs`.
+- [x] Split route construction into `routes/`.
+- [x] Split application state into `state.rs`.
+- [x] Split auth middleware and request extraction into `auth.rs` or `routes/auth.rs`.
+- [x] Split terminal WebSocket orchestration into `terminal/`.
+- [x] Split terminal session registry logic into `terminal/session_registry.rs`.
+- [x] Split agent enrollment and heartbeat logic into `agent/`.
+- [x] Split node management and revocation logic into `node/`.
+- [x] Split audit integration helpers into `audit.rs`.
+- [x] Keep `lib.rs` focused on module declarations and public re-exports.
 
 ## Behavior Preservation
 

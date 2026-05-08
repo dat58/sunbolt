@@ -1,6 +1,10 @@
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    hash::{Hash, Hasher},
+};
 
 use axum::http::{header, HeaderMap, Method};
+use rand::RngCore;
 
 /// Content-Security-Policy value for the Sunbolt web app.
 ///
@@ -91,6 +95,25 @@ pub fn redact_sensitive(text: &str) -> Cow<'_, str> {
         result.push_str(&text[last_end..]);
         Cow::Owned(result)
     }
+}
+
+pub(crate) fn random_token() -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    token
+}
+
+pub(crate) fn token_hash(token: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]

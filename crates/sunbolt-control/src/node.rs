@@ -1,0 +1,304 @@
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+
+use serde::Serialize;
+use sunbolt_auth::User;
+
+use crate::{
+    agent::{
+        credential_fingerprint, AgentEnrollmentRequest, AgentEnrollmentResponse,
+        AgentHeartbeatRequest,
+    },
+    config::NODE_OFFLINE_AFTER,
+    error::{EnrollmentError, NodeConnectionError},
+    security::{random_token, token_hash},
+};
+
+#[derive(Clone)]
+pub(crate) struct NodeEnrollmentRegistry {
+    inner: Arc<Mutex<NodeEnrollmentState>>,
+    next_token_id: Arc<AtomicU64>,
+    next_node_id: Arc<AtomicU64>,
+}
+
+impl Default for NodeEnrollmentRegistry {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(NodeEnrollmentState::default())),
+            next_token_id: Arc::new(AtomicU64::new(1)),
+            next_node_id: Arc::new(AtomicU64::new(1)),
+        }
+    }
+}
+
+#[derive(Default)]
+struct NodeEnrollmentState {
+    tokens_by_hash: HashMap<u64, EnrollmentTokenRecord>,
+    nodes: Vec<NodeRecord>,
+    credentials: Vec<NodeCredentialRecord>,
+    heartbeats: Vec<NodeHeartbeatRecord>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct EnrollmentTokenRecord {
+    id: u64,
+    created_by_user_id: u64,
+    expires_at: Instant,
+    used_by_node_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+struct NodeRecord {
+    id: u64,
+    node_id: String,
+    display_name: String,
+    hostname: String,
+    os: String,
+    architecture: String,
+    agent_version: String,
+    status: NodeStatus,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum NodeStatus {
+    Enrolled,
+    Online,
+    Offline,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct NodeCredentialRecord {
+    node_id: u64,
+    credential_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct NodeHeartbeatRecord {
+    node_id: u64,
+    status: NodeStatus,
+    received_at: Instant,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub(crate) struct NodeView {
+    pub(crate) node_id: String,
+    pub(crate) display_name: String,
+    pub(crate) hostname: String,
+    pub(crate) os: String,
+    pub(crate) architecture: String,
+    pub(crate) agent_version: String,
+    pub(crate) status: NodeStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct EnrollmentTokenResponse {
+    pub(crate) token: String,
+    pub(crate) expires_in_secs: u64,
+    pub(crate) enrollment_command: String,
+}
+
+impl NodeEnrollmentRegistry {
+    pub(crate) fn create_token(&self, user: &User, ttl: Duration) -> EnrollmentTokenResponse {
+        let token = random_token();
+        let token_hash = token_hash(&token);
+        let token_id = self.next_token_id.fetch_add(1, Ordering::Relaxed);
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.tokens_by_hash.insert(
+            token_hash,
+            EnrollmentTokenRecord {
+                id: token_id,
+                created_by_user_id: user.id,
+                expires_at: Instant::now() + ttl,
+                used_by_node_id: None,
+            },
+        );
+
+        EnrollmentTokenResponse {
+            token: token.clone(),
+            expires_in_secs: ttl.as_secs(),
+            enrollment_command: format!(
+                "SUNBOLT_CONTROL_PLANE_URL=http://127.0.0.1:3000 SUNBOLT_AGENT_ENROLLMENT_TOKEN={token} cargo run -p sunbolt-agent"
+            ),
+        }
+    }
+
+    pub(crate) fn enroll(
+        &self,
+        request: AgentEnrollmentRequest,
+    ) -> Result<AgentEnrollmentResponse, EnrollmentError> {
+        let token_hash = token_hash(&request.token);
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let token = state
+            .tokens_by_hash
+            .get_mut(&token_hash)
+            .ok_or(EnrollmentError::InvalidToken)?;
+        if token.used_by_node_id.is_some() {
+            return Err(EnrollmentError::TokenUsed);
+        }
+        if token.expires_at <= Instant::now() {
+            return Err(EnrollmentError::TokenExpired);
+        }
+
+        let id = self.next_node_id.fetch_add(1, Ordering::Relaxed);
+        let node_id = format!("node-{id}");
+        let credential_fingerprint = credential_fingerprint(&request);
+        token.used_by_node_id = Some(id);
+
+        state.nodes.push(NodeRecord {
+            id,
+            node_id: node_id.clone(),
+            display_name: request.node_name,
+            hostname: request.hostname,
+            os: request.os,
+            architecture: request.architecture,
+            agent_version: request.agent_version,
+            status: NodeStatus::Enrolled,
+        });
+        state.credentials.push(NodeCredentialRecord {
+            node_id: id,
+            credential_fingerprint: credential_fingerprint.clone(),
+        });
+        state.heartbeats.push(NodeHeartbeatRecord {
+            node_id: id,
+            status: NodeStatus::Enrolled,
+            received_at: Instant::now(),
+        });
+
+        Ok(AgentEnrollmentResponse {
+            node_id,
+            credential_fingerprint,
+        })
+    }
+
+    pub(crate) fn heartbeat(
+        &self,
+        request: AgentHeartbeatRequest,
+    ) -> Result<NodeView, NodeConnectionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let node_index = state
+            .nodes
+            .iter()
+            .position(|node| node.node_id == request.node_id)
+            .ok_or(NodeConnectionError::UnknownNode)?;
+        let node = &state.nodes[node_index];
+        if node.status == NodeStatus::Revoked {
+            return Err(NodeConnectionError::Revoked);
+        }
+        let credential_matches = state.credentials.iter().any(|credential| {
+            credential.node_id == node.id
+                && credential.credential_fingerprint == request.credential_fingerprint
+        });
+        if !credential_matches {
+            return Err(NodeConnectionError::InvalidCredential);
+        }
+
+        state.nodes[node_index].hostname = request.hostname;
+        state.nodes[node_index].os = request.os;
+        state.nodes[node_index].architecture = request.architecture;
+        state.nodes[node_index].agent_version = request.agent_version;
+        state.nodes[node_index].status = NodeStatus::Online;
+        let node_id = state.nodes[node_index].id;
+        state.heartbeats.push(NodeHeartbeatRecord {
+            node_id,
+            status: NodeStatus::Online,
+            received_at: Instant::now(),
+        });
+
+        Ok(node_view(&state.nodes[node_index], Some(Instant::now())))
+    }
+
+    pub(crate) fn list_nodes(&self) -> Vec<NodeView> {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .nodes
+            .iter()
+            .map(|node| node_view(node, latest_heartbeat_at(&state, node.id)))
+            .collect()
+    }
+
+    pub(crate) fn node_details(&self, node_id: &str) -> Option<NodeView> {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .map(|node| node_view(node, latest_heartbeat_at(&state, node.id)))
+    }
+
+    pub(crate) fn revoke_node(&self, node_id: &str) -> Result<NodeView, NodeConnectionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let node_index = state
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or(NodeConnectionError::UnknownNode)?;
+        state.nodes[node_index].status = NodeStatus::Revoked;
+        Ok(node_view(
+            &state.nodes[node_index],
+            latest_heartbeat_at(&state, state.nodes[node_index].id),
+        ))
+    }
+
+    pub(crate) fn node_is_online(&self, node_id: &str) -> bool {
+        self.node_details(node_id)
+            .is_some_and(|node| node.status == NodeStatus::Online)
+    }
+}
+
+fn latest_heartbeat_at(state: &NodeEnrollmentState, node_id: u64) -> Option<Instant> {
+    state
+        .heartbeats
+        .iter()
+        .filter(|heartbeat| heartbeat.node_id == node_id && heartbeat.status != NodeStatus::Revoked)
+        .max_by_key(|heartbeat| heartbeat.received_at)
+        .map(|heartbeat| heartbeat.received_at)
+}
+
+fn node_view(node: &NodeRecord, last_heartbeat_at: Option<Instant>) -> NodeView {
+    let status = match node.status {
+        NodeStatus::Online
+            if last_heartbeat_at
+                .is_some_and(|received_at| received_at.elapsed() >= NODE_OFFLINE_AFTER) =>
+        {
+            NodeStatus::Offline
+        }
+        status => status,
+    };
+
+    NodeView {
+        node_id: node.node_id.clone(),
+        display_name: node.display_name.clone(),
+        hostname: node.hostname.clone(),
+        os: node.os.clone(),
+        architecture: node.architecture.clone(),
+        agent_version: node.agent_version.clone(),
+        status,
+    }
+}
