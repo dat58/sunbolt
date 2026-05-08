@@ -27,6 +27,8 @@ const STATUS_CONNECTING_CLASS: &str =
     "sunbolt-status border-sun-amber/70 bg-sun-amber/10 text-sun-amber";
 const STATUS_CONNECTED_CLASS: &str =
     "sunbolt-status border-lightning-cyan/70 bg-lightning-cyan/10 text-lightning-cyan";
+const STATUS_DEGRADED_CLASS: &str =
+    "sunbolt-status border-sun-amber/70 bg-sun-amber/10 text-sun-amber";
 const STATUS_ERROR_CLASS: &str =
     "sunbolt-status border-warm-orange/70 bg-warm-orange/10 text-warm-orange";
 const STATUS_CLOSED_CLASS: &str =
@@ -785,7 +787,8 @@ pub fn terminal_bridge_script() -> String {
     if (retryButton) {{
       retryButton.disabled = loginBusy
         || currentStatusState === "connecting"
-        || currentStatusState === "connected";
+        || currentStatusState === "connected"
+        || currentStatusState === "degraded";
     }}
     if (nodeInput) {{
       nodeInput.disabled = !authenticated || loginBusy || currentStatusState === "connecting";
@@ -803,12 +806,35 @@ pub fn terminal_bridge_script() -> String {
       idle: "{status_closed_class}",
       connecting: "{status_connecting_class}",
       connected: "{status_connected_class}",
+      degraded: "{status_degraded_class}",
       error: "{status_error_class}",
       disconnected: "{status_closed_class}",
       closed: "{status_closed_class}"
     }};
     status.className = classes[state] || "{status_base_class}";
     syncControls();
+  }};
+
+  const transportStatusLabel = (transportStatus) => {{
+    if (!transportStatus || !transportStatus.degraded) {{
+      return null;
+    }}
+    if (transportStatus.kind === "long_poll_https") {{
+      return "Degraded: Long Poll";
+    }}
+    return "Degraded Transport";
+  }};
+
+  const reportTransportStatus = (transportStatus) => {{
+    const label = transportStatusLabel(transportStatus);
+    if (!label) {{
+      return false;
+    }}
+    setStatus(label, "degraded");
+    if (transportStatus.message) {{
+      setError(transportStatus.message);
+    }}
+    return true;
   }};
 
   const setAuthVisible = (visible) => {{
@@ -888,7 +914,8 @@ pub fn terminal_bridge_script() -> String {
       session_id: message.session_id,
       node_id: message.node_id || null,
       reconnect_token: message.reconnect_token || reconnectToken,
-      state
+      state,
+      transport_status: message.transport_status || null
     }});
     persistWorkspace();
     renderTabs();
@@ -1136,12 +1163,16 @@ pub fn terminal_bridge_script() -> String {
         sessionId = message.session_id;
         reconnectToken = message.reconnect_token || null;
         rememberSession(message, "active");
-        setStatus("Active", "connected");
+        if (!reportTransportStatus(message.transport_status)) {{
+          setStatus("Active", "connected");
+        }}
       }} else if (message.type === "reattached") {{
         sessionId = message.session_id;
         reconnectToken = message.reconnect_token || reconnectToken;
         rememberSession(message, "active");
-        setStatus("Active", "connected");
+        if (!reportTransportStatus(message.transport_status)) {{
+          setStatus("Active", "connected");
+        }}
       }} else if (message.type === "detached") {{
         const stored = activeSessions.get(message.session_id) || {{ session_id: message.session_id }};
         activeSessions.set(message.session_id, {{ ...stored, state: "detached", reconnect_token: reconnectToken }});
@@ -1476,6 +1507,7 @@ pub fn terminal_bridge_script() -> String {
         status_base_class = STATUS_BASE_CLASS,
         status_connecting_class = STATUS_CONNECTING_CLASS,
         status_connected_class = STATUS_CONNECTED_CLASS,
+        status_degraded_class = STATUS_DEGRADED_CLASS,
         status_error_class = STATUS_ERROR_CLASS,
         status_closed_class = STATUS_CLOSED_CLASS,
         fallback_output_class = FALLBACK_OUTPUT_CLASS,
@@ -1574,6 +1606,8 @@ mod tests {
         assert!(script.contains(r#"setStatus("MFA Required", "error")"#));
         assert!(script.contains(r#"setStatus("Connecting", "connecting")"#));
         assert!(script.contains(r#"setStatus("Active", "connected")"#));
+        assert!(script.contains(r#"setStatus(label, "degraded")"#));
+        assert!(script.contains("Degraded: Long Poll"));
         assert!(script.contains(r#"setStatus("Disconnected", "disconnected")"#));
         assert!(script.contains(r#"setStatus("Error", "error")"#));
         assert!(script.contains("sunbolt-terminal-error"));

@@ -21,6 +21,7 @@ const DEFAULT_CONTROL_PLANE_URL: &str = "http://127.0.0.1:3000";
 const DEFAULT_NODE_NAME: &str = "local-agent";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const AGENT_TRANSPORT_WS_PATH: &str = "/agent/transport/ws";
+const AGENT_TRANSPORT_LONG_POLL_PATH: &str = "/agent/transport/long-poll";
 
 /// Returns a stable name for the agent component.
 #[must_use]
@@ -179,6 +180,11 @@ impl AgentConnection {
     }
 
     #[must_use]
+    pub fn long_poll_transport_endpoint(&self) -> String {
+        join_url_path(&self.control_plane_url, AGENT_TRANSPORT_LONG_POLL_PATH)
+    }
+
+    #[must_use]
     pub fn transport_id(&self) -> AgentTransportId {
         AgentTransportId(format!("{}-outbound", self.heartbeat.node_id))
     }
@@ -190,6 +196,7 @@ impl AgentConnection {
             supported_transports: vec![
                 AgentTransportKind::WebSocketTlsTcp443,
                 AgentTransportKind::Http2TlsTcp443,
+                AgentTransportKind::LongPollHttps,
             ],
             preferred_transport: AgentTransportKind::WebSocketTlsTcp443,
             agent_version: self.heartbeat.agent_version.clone(),
@@ -235,6 +242,7 @@ impl AgentConnection {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AgentOutboundTransportPlan {
     pub endpoint: String,
+    pub long_poll_fallback_endpoint: String,
     pub client_hello: AgentTransportClientHello,
     pub reconnect_policy: AgentTransportReconnectPolicy,
     pub heartbeat_interval: Duration,
@@ -245,6 +253,7 @@ impl AgentOutboundTransportPlan {
     pub fn from_connection(connection: &AgentConnection) -> Self {
         Self {
             endpoint: connection.transport_endpoint(),
+            long_poll_fallback_endpoint: connection.long_poll_transport_endpoint(),
             client_hello: connection.transport_client_hello(),
             reconnect_policy: connection.reconnect_policy(),
             heartbeat_interval: HEARTBEAT_INTERVAL,
@@ -726,6 +735,36 @@ mod tests {
     }
 
     #[test]
+    fn agent_connection_builds_restrictive_network_fallback_endpoint() {
+        let config = AgentConfig {
+            control_plane_url: "https://control.example.test/".to_owned(),
+            node_name: "node-a".to_owned(),
+            enrollment_token: None,
+        };
+        let enrollment = AgentEnrollmentResponse {
+            node_id: "node-1".to_owned(),
+            credential_fingerprint: "dev-fingerprint".to_owned(),
+        };
+        let info = LocalNodeInfo {
+            hostname: "host-a".to_owned(),
+            os: "linux".to_owned(),
+            architecture: "x86_64".to_owned(),
+            agent_version: "0.1.0".to_owned(),
+        };
+
+        let connection = AgentConnection::new(&config, &enrollment, &info);
+
+        assert_eq!(
+            connection.long_poll_transport_endpoint(),
+            "https://control.example.test/agent/transport/long-poll"
+        );
+        assert!(connection
+            .transport_client_hello()
+            .supported_transports
+            .contains(&AgentTransportKind::LongPollHttps));
+    }
+
+    #[test]
     fn outbound_transport_plan_uses_enrolled_node_identity() {
         let config = AgentConfig {
             control_plane_url: "https://control.example.test".to_owned(),
@@ -751,6 +790,10 @@ mod tests {
         assert_eq!(
             plan.endpoint,
             "wss://control.example.test/agent/transport/ws"
+        );
+        assert_eq!(
+            plan.long_poll_fallback_endpoint,
+            "https://control.example.test/agent/transport/long-poll"
         );
         assert_eq!(
             plan.client_hello.supported_protocol_versions,

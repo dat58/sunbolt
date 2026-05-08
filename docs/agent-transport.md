@@ -50,6 +50,30 @@ The agent should:
 - Resume or report non-recoverable terminal state after reconnect.
 - Apply backpressure instead of unbounded buffering.
 
+## Restrictive-Network Fallback
+
+Long-poll HTTPS is required as a production fallback because some managed nodes
+run behind proxies that allow outbound HTTPS request/response traffic but block
+WebSocket upgrades, HTTP/2 streaming, or UDP. The fallback is intentionally
+degraded: it trades latency and stream efficiency for reachability through the
+most restrictive enterprise egress paths.
+
+The fallback route is `/agent/transport/long-poll`. Each request carries a
+versioned transport client hello plus any agent-to-control-plane events. The
+control plane authenticates the node identity on every poll, registers a
+`LongPollHttps` transport when needed, and returns queued control-plane
+envelopes. Terminal sessions opened over this path are marked with a degraded
+transport status so browser UI can report that latency may be higher.
+
+Tradeoffs:
+
+- Long-poll works over ordinary outbound HTTPS and avoids inbound agent access.
+- Command delivery latency depends on poll timing and proxy behavior.
+- Backpressure is coarser than a streaming WebSocket or HTTP/2 connection.
+- The control plane must keep queued terminal commands bounded.
+- Agents should prefer WebSocket or HTTP/2 and use long-poll only after the
+  streaming baseline is unavailable.
+
 ## Protocol Requirements
 
 Transport messages should be versioned and serialized through `serde` types in `sunbolt-protocol`.
@@ -79,3 +103,5 @@ Transport metrics should cover connection state, heartbeat latency, reconnect co
 The current local agent flow still supports enrollment and heartbeat HTTP endpoints for development iteration.
 
 The baseline Sunbolt-native transport now has a WebSocket-over-TLS/TCP/443 control-plane route at `/agent/transport/ws`. After enrollment, an agent can derive an outbound `wss://` endpoint, send a versioned client hello with its node identity fingerprint, and use the negotiated channel for heartbeats and terminal command/event envelopes. The control plane applies a liveness timeout, replaces duplicate node transports, and records transport negotiation, agent connected, and agent disconnected audit events.
+
+The restrictive-network fallback foundation is available at `/agent/transport/long-poll`. Agent runtime integration should attempt the streaming baseline first, then fall back to long-poll when WebSocket or HTTP/2 streaming is unavailable.

@@ -2,6 +2,7 @@ pub mod mesh;
 pub mod transport;
 
 use serde::{Deserialize, Serialize};
+use transport::AgentTransportKind;
 
 /// Initial protocol version for future control-plane and agent messages.
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -17,6 +18,14 @@ pub struct TerminalReconnectToken(pub String);
 /// Stable identifier for a managed node.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub String);
+
+/// Browser-visible status for the agent transport backing a terminal session.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TerminalTransportStatus {
+    pub kind: AgentTransportKind,
+    pub degraded: bool,
+    pub message: Option<String>,
+}
 
 /// Terminal viewport size in character cells.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -68,6 +77,7 @@ pub enum TerminalServerMessage {
         node_id: Option<NodeId>,
         size: TerminalSize,
         reconnect_token: Option<TerminalReconnectToken>,
+        transport_status: Option<TerminalTransportStatus>,
     },
     Output {
         session_id: TerminalSessionId,
@@ -86,6 +96,7 @@ pub enum TerminalServerMessage {
         node_id: Option<NodeId>,
         size: TerminalSize,
         reconnect_token: Option<TerminalReconnectToken>,
+        transport_status: Option<TerminalTransportStatus>,
     },
     Error {
         session_id: Option<TerminalSessionId>,
@@ -170,8 +181,9 @@ mod tests {
     use super::{
         AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalClientMessage, TerminalError,
         TerminalErrorCode, TerminalExit, TerminalReconnectToken, TerminalServerMessage,
-        TerminalSessionId, TerminalSize, PROTOCOL_VERSION,
+        TerminalSessionId, TerminalSize, TerminalTransportStatus, PROTOCOL_VERSION,
     };
+    use crate::transport::AgentTransportKind;
     use serde_json::json;
 
     #[test]
@@ -356,6 +368,7 @@ mod tests {
             node_id: None,
             size: TerminalSize { cols: 80, rows: 24 },
             reconnect_token: Some(TerminalReconnectToken("token-1".to_owned())),
+            transport_status: None,
         })
         .expect("started message should serialize");
 
@@ -366,6 +379,7 @@ mod tests {
                 "session_id": "session-1",
                 "node_id": null,
                 "reconnect_token": "token-1",
+                "transport_status": null,
                 "size": {
                     "cols": 80,
                     "rows": 24
@@ -408,6 +422,11 @@ mod tests {
             node_id: None,
             size: TerminalSize { cols: 80, rows: 24 },
             reconnect_token: Some(TerminalReconnectToken("token-2".to_owned())),
+            transport_status: Some(TerminalTransportStatus {
+                kind: AgentTransportKind::LongPollHttps,
+                degraded: true,
+                message: Some("restrictive network fallback active".to_owned()),
+            }),
         })
         .expect("reattached message should serialize");
 
@@ -418,6 +437,11 @@ mod tests {
                 "session_id": "session-1",
                 "node_id": null,
                 "reconnect_token": "token-2",
+                "transport_status": {
+                    "kind": "long_poll_https",
+                    "degraded": true,
+                    "message": "restrictive network fallback active"
+                },
                 "size": {
                     "cols": 80,
                     "rows": 24

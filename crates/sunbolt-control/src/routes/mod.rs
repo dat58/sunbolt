@@ -15,7 +15,7 @@ use serde::Serialize;
 use tower_http::trace::TraceLayer;
 
 use crate::{
-    agent::agent_transport_websocket,
+    agent::{agent_transport_long_poll, agent_transport_websocket},
     auth::require_auth_middleware,
     config::RuntimeMode,
     error::{ErrorResponse, StartupError},
@@ -45,6 +45,7 @@ pub const ENROLLMENT_TOKENS_PATH: &str = "/nodes/enrollment-tokens";
 pub const AGENT_ENROLL_PATH: &str = "/agent/enroll";
 pub const AGENT_HEARTBEAT_PATH: &str = "/agent/heartbeat";
 pub const AGENT_TRANSPORT_WS_PATH: &str = "/agent/transport/ws";
+pub const AGENT_TRANSPORT_LONG_POLL_PATH: &str = "/agent/transport/long-poll";
 pub const NODES_PATH: &str = "/nodes";
 pub(crate) const NODE_DETAILS_PATH: &str = "/nodes/{node_id}";
 pub(crate) const NODE_REVOKE_PATH: &str = "/nodes/{node_id}/revoke";
@@ -140,6 +141,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route(AGENT_ENROLL_PATH, post(agent::agent_enroll))
         .route(AGENT_HEARTBEAT_PATH, post(agent::agent_heartbeat))
         .route(AGENT_TRANSPORT_WS_PATH, get(agent_transport_websocket))
+        .route(
+            AGENT_TRANSPORT_LONG_POLL_PATH,
+            post(agent_transport_long_poll),
+        )
         .layer(origin_layer)
         .layer(from_fn(security_headers_middleware))
         .layer(TraceLayer::new_for_http())

@@ -109,6 +109,12 @@ impl AgentTransportKind {
     pub const fn is_tcp443_baseline(self) -> bool {
         matches!(self, Self::WebSocketTlsTcp443 | Self::Http2TlsTcp443)
     }
+
+    /// Returns true when the transport is the restrictive-network HTTP fallback.
+    #[must_use]
+    pub const fn is_restrictive_network_fallback(self) -> bool {
+        matches!(self, Self::LongPollHttps)
+    }
 }
 
 /// Lifecycle states for an outbound agent transport connection.
@@ -264,6 +270,23 @@ pub struct AgentTransportServerHello {
     pub max_in_flight_messages: u32,
     pub reconnect_policy: AgentTransportReconnectPolicy,
     pub resume: AgentTransportResumeDecision,
+}
+
+/// Agent long-poll request for restrictive networks that only permit
+/// request/response HTTPS traffic.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentTransportLongPollRequest {
+    pub client_hello: AgentTransportEnvelope,
+    pub events: Vec<AgentTransportEnvelope>,
+}
+
+/// Control-plane response to one restrictive-network long-poll request.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentTransportLongPollResponse {
+    pub envelopes: Vec<AgentTransportEnvelope>,
+    pub retry_after_ms: u64,
+    pub degraded: bool,
+    pub degraded_reason: Option<String>,
 }
 
 /// Transport heartbeat messages exchanged after negotiation succeeds.
@@ -555,6 +578,7 @@ mod tests {
         assert!(AgentTransportKind::Http2TlsTcp443.is_tcp443_baseline());
         assert!(!AgentTransportKind::QuicUdp443.is_tcp443_baseline());
         assert!(!AgentTransportKind::LongPollHttps.is_tcp443_baseline());
+        assert!(AgentTransportKind::LongPollHttps.is_restrictive_network_fallback());
     }
 
     #[test]

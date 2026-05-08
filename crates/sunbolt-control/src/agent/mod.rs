@@ -10,7 +10,9 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::StatusCode,
     response::IntoResponse,
+    Json,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -19,10 +21,11 @@ use sunbolt_protocol::{
     transport::{
         AgentTransportClientHello, AgentTransportEnvelope, AgentTransportError,
         AgentTransportErrorCode, AgentTransportHeartbeat, AgentTransportId, AgentTransportKind,
-        AgentTransportMessageId, AgentTransportPayload, AgentTransportReconnectPolicy,
-        AgentTransportResumeDecision, AgentTransportServerHello,
+        AgentTransportLongPollRequest, AgentTransportLongPollResponse, AgentTransportMessageId,
+        AgentTransportPayload, AgentTransportReconnectPolicy, AgentTransportResumeDecision,
+        AgentTransportServerHello,
     },
-    AgentTerminalCommand, AgentTerminalEvent, NodeId, PROTOCOL_VERSION,
+    AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalTransportStatus, PROTOCOL_VERSION,
 };
 use tokio::{
     sync::{mpsc, Mutex as AsyncMutex},
@@ -40,12 +43,37 @@ const AGENT_TRANSPORT_CHANNEL_CAPACITY: usize = 128;
 const AGENT_TRANSPORT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const AGENT_TRANSPORT_LIVENESS_TIMEOUT: Duration = Duration::from_secs(90);
 const AGENT_TRANSPORT_MAX_IN_FLIGHT_MESSAGES: u32 = 128;
+const AGENT_TRANSPORT_LONG_POLL_WAIT: Duration = Duration::from_secs(25);
+const AGENT_TRANSPORT_LONG_POLL_RETRY: Duration = Duration::from_secs(1);
+const AGENT_TRANSPORT_LONG_POLL_BATCH: usize = 32;
+const LONG_POLL_DEGRADED_REASON: &str =
+    "restrictive network fallback active; terminal latency may be higher";
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredAgentConnection {
     pub(crate) command_tx: mpsc::Sender<AgentTerminalCommand>,
     pub(crate) event_rx: Arc<AsyncMutex<mpsc::Receiver<AgentTerminalEvent>>>,
     pub(crate) transport_id: AgentTransportId,
+    pub(crate) transport_kind: AgentTransportKind,
+    pub(crate) degraded_reason: Option<String>,
+    long_poll: Option<LongPollConnectionState>,
+}
+
+#[derive(Debug, Clone)]
+struct LongPollConnectionState {
+    command_rx: Arc<AsyncMutex<mpsc::Receiver<AgentTerminalCommand>>>,
+    event_tx: mpsc::Sender<AgentTerminalEvent>,
+    next_message_id: Arc<Mutex<AgentTransportMessageId>>,
+}
+
+impl RegisteredAgentConnection {
+    pub(crate) fn terminal_transport_status(&self) -> TerminalTransportStatus {
+        TerminalTransportStatus {
+            kind: self.transport_kind,
+            degraded: self.transport_kind.is_restrictive_network_fallback(),
+            message: self.degraded_reason.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -70,6 +98,9 @@ impl AgentConnectionRegistry {
                     command_tx,
                     event_rx: Arc::new(AsyncMutex::new(event_rx)),
                     transport_id: AgentTransportId("test-transport".to_owned()),
+                    transport_kind: AgentTransportKind::WebSocketTlsTcp443,
+                    degraded_reason: None,
+                    long_poll: None,
                 },
             );
     }
@@ -78,7 +109,7 @@ impl AgentConnectionRegistry {
         &self,
         node_id: impl Into<String>,
         transport_id: AgentTransportId,
-        _transport_kind: AgentTransportKind,
+        transport_kind: AgentTransportKind,
         command_tx: mpsc::Sender<AgentTerminalCommand>,
         event_rx: mpsc::Receiver<AgentTerminalEvent>,
     ) -> AgentConnectionRegistration {
@@ -94,6 +125,9 @@ impl AgentConnectionRegistry {
                     command_tx,
                     event_rx: Arc::new(AsyncMutex::new(event_rx)),
                     transport_id,
+                    transport_kind,
+                    degraded_reason: None,
+                    long_poll: None,
                 },
             )
             .is_some();
@@ -103,6 +137,47 @@ impl AgentConnectionRegistry {
         } else {
             AgentConnectionRegistration::Registered
         }
+    }
+
+    pub(crate) fn ensure_long_poll_transport(
+        &self,
+        node_id: impl Into<String>,
+        transport_id: AgentTransportId,
+    ) -> (AgentConnectionRegistration, RegisteredAgentConnection) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let node_id = node_id.into();
+        if let Some(connection) = inner.get(&node_id) {
+            if connection.transport_id == transport_id
+                && connection.transport_kind == AgentTransportKind::LongPollHttps
+            {
+                return (AgentConnectionRegistration::Existing, connection.clone());
+            }
+        }
+
+        let (command_tx, command_rx) = mpsc::channel(AGENT_TRANSPORT_CHANNEL_CAPACITY);
+        let (event_tx, event_rx) = mpsc::channel(AGENT_TRANSPORT_CHANNEL_CAPACITY);
+        let connection = RegisteredAgentConnection {
+            command_tx,
+            event_rx: Arc::new(AsyncMutex::new(event_rx)),
+            transport_id,
+            transport_kind: AgentTransportKind::LongPollHttps,
+            degraded_reason: Some(LONG_POLL_DEGRADED_REASON.to_owned()),
+            long_poll: Some(LongPollConnectionState {
+                command_rx: Arc::new(AsyncMutex::new(command_rx)),
+                event_tx,
+                next_message_id: Arc::new(Mutex::new(AgentTransportMessageId(2))),
+            }),
+        };
+        let replaced_existing = inner.insert(node_id, connection.clone()).is_some();
+        let registration = if replaced_existing {
+            AgentConnectionRegistration::ReplacedExisting
+        } else {
+            AgentConnectionRegistration::Registered
+        };
+        (registration, connection)
     }
 
     pub(crate) fn connection(&self, node_id: &str) -> Option<RegisteredAgentConnection> {
@@ -162,6 +237,7 @@ impl AgentConnectionRegistry {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum AgentConnectionRegistration {
+    Existing,
     Registered,
     ReplacedExisting,
 }
@@ -213,6 +289,32 @@ pub(crate) async fn agent_transport_websocket(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_agent_transport_socket(socket, state))
+}
+
+pub(crate) async fn agent_transport_long_poll(
+    State(state): State<AppState>,
+    Json(request): Json<AgentTransportLongPollRequest>,
+) -> impl IntoResponse {
+    match handle_agent_transport_long_poll_request(&state, request).await {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(AgentTransportLongPollResponse {
+                envelopes: vec![AgentTransportEnvelope::current(
+                    AgentTransportMessageId::first(),
+                    NodeId("unknown".to_owned()),
+                    AgentTransportId("unknown".to_owned()),
+                    AgentTransportPayload::Error {
+                        error: transport_error_for_connection(error),
+                    },
+                )],
+                retry_after_ms: millis(AGENT_TRANSPORT_LONG_POLL_RETRY),
+                degraded: true,
+                degraded_reason: Some(LONG_POLL_DEGRADED_REASON.to_owned()),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -447,24 +549,40 @@ fn negotiate_transport(
     state: &AppState,
     envelope: AgentTransportEnvelope,
 ) -> Result<AgentTransportHandshake, AgentTransportConnectionError> {
+    negotiate_transport_for_kind(state, envelope, AgentTransportKind::WebSocketTlsTcp443)
+}
+
+fn negotiate_transport_for_kind(
+    state: &AppState,
+    envelope: AgentTransportEnvelope,
+    selected_transport: AgentTransportKind,
+) -> Result<AgentTransportHandshake, AgentTransportConnectionError> {
     envelope
         .validate()
         .map_err(|_| AgentTransportConnectionError::InvalidEnvelope)?;
     let AgentTransportPayload::ClientHello { hello } = envelope.payload else {
         return Err(AgentTransportConnectionError::MissingClientHello);
     };
-    validate_client_hello(&hello)?;
+    validate_client_hello_for_transport(&hello, selected_transport)?;
     authenticate_transport_client(state, &envelope.node_id, &hello)?;
 
     Ok(AgentTransportHandshake {
         node_id: envelope.node_id,
         transport_id: envelope.transport_id,
-        selected_transport: AgentTransportKind::WebSocketTlsTcp443,
+        selected_transport,
     })
 }
 
+#[cfg(test)]
 fn validate_client_hello(
     hello: &AgentTransportClientHello,
+) -> Result<(), AgentTransportConnectionError> {
+    validate_client_hello_for_transport(hello, AgentTransportKind::WebSocketTlsTcp443)
+}
+
+fn validate_client_hello_for_transport(
+    hello: &AgentTransportClientHello,
+    required_transport: AgentTransportKind,
 ) -> Result<(), AgentTransportConnectionError> {
     if !hello
         .supported_protocol_versions
@@ -472,14 +590,164 @@ fn validate_client_hello(
     {
         return Err(AgentTransportConnectionError::UnsupportedProtocolVersion);
     }
-    if !hello
-        .supported_transports
-        .contains(&AgentTransportKind::WebSocketTlsTcp443)
-    {
+    if !hello.supported_transports.contains(&required_transport) {
         return Err(AgentTransportConnectionError::UnsupportedTransport);
     }
 
     Ok(())
+}
+
+async fn handle_agent_transport_long_poll_request(
+    state: &AppState,
+    request: AgentTransportLongPollRequest,
+) -> Result<AgentTransportLongPollResponse, AgentTransportConnectionError> {
+    let handshake = negotiate_transport_for_kind(
+        state,
+        request.client_hello,
+        AgentTransportKind::LongPollHttps,
+    )?;
+    let node_id_text = handshake.node_id.0.clone();
+    let (registration, connection) = state
+        .agent_connections
+        .ensure_long_poll_transport(node_id_text.clone(), handshake.transport_id.clone());
+
+    record_long_poll_registration(&state.audit, registration, &handshake);
+
+    let Some(long_poll) = connection.long_poll.clone() else {
+        return Err(AgentTransportConnectionError::UnsupportedTransport);
+    };
+    let mut envelopes = vec![AgentTransportEnvelope::current(
+        next_long_poll_message_id(&long_poll),
+        handshake.node_id.clone(),
+        handshake.transport_id.clone(),
+        AgentTransportPayload::ServerHello {
+            hello: handshake.server_hello(),
+        },
+    )];
+
+    for envelope in request.events {
+        match handle_agent_transport_envelope(&handshake, envelope, &long_poll.event_tx) {
+            Ok(TransportFrameOutcome::HeartbeatReceived { ping_message_id }) => {
+                envelopes.push(AgentTransportEnvelope::current(
+                    next_long_poll_message_id(&long_poll),
+                    handshake.node_id.clone(),
+                    handshake.transport_id.clone(),
+                    AgentTransportPayload::Heartbeat {
+                        heartbeat: AgentTransportHeartbeat::Pong {
+                            ping_message_id,
+                            received_at_unix_ms: 0,
+                        },
+                    },
+                ));
+            }
+            Ok(TransportFrameOutcome::TerminalEventReceived | TransportFrameOutcome::Ignored) => {}
+            Err(error) => envelopes.push(AgentTransportEnvelope::current(
+                next_long_poll_message_id(&long_poll),
+                handshake.node_id.clone(),
+                handshake.transport_id.clone(),
+                AgentTransportPayload::Error { error },
+            )),
+        }
+    }
+
+    append_long_poll_commands(&mut envelopes, &handshake, &long_poll).await;
+
+    Ok(AgentTransportLongPollResponse {
+        envelopes,
+        retry_after_ms: millis(AGENT_TRANSPORT_LONG_POLL_RETRY),
+        degraded: true,
+        degraded_reason: Some(LONG_POLL_DEGRADED_REASON.to_owned()),
+    })
+}
+
+fn record_long_poll_registration(
+    audit: &sunbolt_audit::AuditLog,
+    registration: AgentConnectionRegistration,
+    handshake: &AgentTransportHandshake,
+) {
+    let node_id_text = &handshake.node_id.0;
+    let transport_id_text = &handshake.transport_id.0;
+    match registration {
+        AgentConnectionRegistration::Existing => {}
+        AgentConnectionRegistration::Registered | AgentConnectionRegistration::ReplacedExisting => {
+            if registration == AgentConnectionRegistration::ReplacedExisting {
+                audit.record(AuditEventInput {
+                    kind: AuditEventKind::AgentDisconnected,
+                    actor_email: None,
+                    message: format!(
+                        "duplicate agent transport replaced existing connection for node {node_id_text}"
+                    ),
+                });
+            }
+            audit.record(AuditEventInput {
+                kind: AuditEventKind::TransportNegotiated,
+                actor_email: None,
+                message: format!(
+                    "agent transport {transport_id_text} negotiated for node {node_id_text} using {:?}",
+                    handshake.selected_transport
+                ),
+            });
+            audit.record(AuditEventInput {
+                kind: AuditEventKind::AgentConnected,
+                actor_email: None,
+                message: format!(
+                    "agent node {node_id_text} connected on degraded long-poll transport {transport_id_text}"
+                ),
+            });
+            info!(
+                node_id = %node_id_text,
+                transport_id = %transport_id_text,
+                "agent long-poll transport connected"
+            );
+        }
+    }
+}
+
+async fn append_long_poll_commands(
+    envelopes: &mut Vec<AgentTransportEnvelope>,
+    handshake: &AgentTransportHandshake,
+    long_poll: &LongPollConnectionState,
+) {
+    let mut command_rx = long_poll.command_rx.lock().await;
+    if envelopes.len() == 1 {
+        if let Ok(Some(command)) =
+            time::timeout(AGENT_TRANSPORT_LONG_POLL_WAIT, command_rx.recv()).await
+        {
+            envelopes.push(command_envelope(handshake, long_poll, command));
+        }
+    }
+
+    while envelopes.len() < AGENT_TRANSPORT_LONG_POLL_BATCH {
+        match command_rx.try_recv() {
+            Ok(command) => envelopes.push(command_envelope(handshake, long_poll, command)),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                break;
+            }
+        }
+    }
+}
+
+fn command_envelope(
+    handshake: &AgentTransportHandshake,
+    long_poll: &LongPollConnectionState,
+    command: AgentTerminalCommand,
+) -> AgentTransportEnvelope {
+    AgentTransportEnvelope::current(
+        next_long_poll_message_id(long_poll),
+        handshake.node_id.clone(),
+        handshake.transport_id.clone(),
+        AgentTransportPayload::TerminalCommand { command },
+    )
+}
+
+fn next_long_poll_message_id(long_poll: &LongPollConnectionState) -> AgentTransportMessageId {
+    let mut next = long_poll
+        .next_message_id
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let current = *next;
+    *next = next.next();
+    current
 }
 
 fn authenticate_transport_client(
@@ -650,8 +918,9 @@ fn millis(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_agent_transport_envelope, validate_client_hello, AgentConnectionRegistration,
-        AgentConnectionRegistry, AgentTransportHandshake,
+        handle_agent_transport_envelope, validate_client_hello,
+        validate_client_hello_for_transport, AgentConnectionRegistration, AgentConnectionRegistry,
+        AgentTransportHandshake,
     };
     use sunbolt_protocol::{
         transport::{
@@ -675,6 +944,12 @@ mod tests {
         let mut hello = valid_hello();
         hello.supported_transports = vec![AgentTransportKind::QuicUdp443];
         assert!(validate_client_hello(&hello).is_err());
+
+        let mut hello = valid_hello();
+        hello.supported_transports = vec![AgentTransportKind::LongPollHttps];
+        assert!(
+            validate_client_hello_for_transport(&hello, AgentTransportKind::LongPollHttps).is_ok()
+        );
     }
 
     #[test]
@@ -719,6 +994,23 @@ mod tests {
             registry.disconnect_transport("node-1", &AgentTransportId("transport-2".to_owned()))
         );
         assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn registry_marks_long_poll_transport_as_degraded() {
+        let registry = AgentConnectionRegistry::default();
+
+        let (first, connection) = registry
+            .ensure_long_poll_transport("node-1", AgentTransportId("transport-1".to_owned()));
+        let (second, same_connection) = registry
+            .ensure_long_poll_transport("node-1", AgentTransportId("transport-1".to_owned()));
+
+        assert_eq!(first, AgentConnectionRegistration::Registered);
+        assert_eq!(second, AgentConnectionRegistration::Existing);
+        assert_eq!(connection.transport_kind, AgentTransportKind::LongPollHttps);
+        assert!(connection.terminal_transport_status().degraded);
+        assert!(same_connection.long_poll.is_some());
+        assert_eq!(registry.len(), 1);
     }
 
     #[tokio::test]

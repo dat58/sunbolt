@@ -827,6 +827,7 @@ mod tests {
             },
             &sunbolt_protocol::NodeId("node-1".to_owned()),
             &registry,
+            None,
         );
 
         assert_eq!(
@@ -848,6 +849,7 @@ mod tests {
             },
             &sunbolt_protocol::NodeId("node-1".to_owned()),
             &registry,
+            None,
         );
 
         assert!(matches!(

@@ -7,7 +7,7 @@ use std::{
 use serde::Serialize;
 use sunbolt_protocol::{
     AgentTerminalCommand, TerminalReconnectToken, TerminalServerMessage, TerminalSessionId,
-    TerminalSize as ProtocolTerminalSize,
+    TerminalSize as ProtocolTerminalSize, TerminalTransportStatus,
 };
 use sunbolt_terminal::{LocalPtySession, TerminalSessionState};
 use tokio::sync::{broadcast, mpsc};
@@ -30,6 +30,12 @@ pub(crate) enum TerminalBackend {
     },
 }
 
+pub(crate) struct RemoteTerminalSession {
+    pub(crate) command_tx: mpsc::Sender<AgentTerminalCommand>,
+    pub(crate) node_id: String,
+    pub(crate) transport_status: TerminalTransportStatus,
+}
+
 pub(crate) struct TerminalReattachTarget {
     pub(crate) backend: TerminalBackend,
     pub(crate) output_rx: broadcast::Receiver<TerminalServerMessage>,
@@ -37,6 +43,7 @@ pub(crate) struct TerminalReattachTarget {
     pub(crate) size: ProtocolTerminalSize,
     pub(crate) reconnect_token: TerminalReconnectToken,
     pub(crate) node_id: Option<String>,
+    pub(crate) transport_status: Option<TerminalTransportStatus>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -48,6 +55,7 @@ pub(crate) struct TerminalSessionSummary {
     pub(crate) rows: u16,
     pub(crate) age_secs: u64,
     pub(crate) idle_secs: u64,
+    pub(crate) transport_status: Option<TerminalTransportStatus>,
 }
 
 struct TrackedTerminalSession {
@@ -62,6 +70,17 @@ struct TrackedTerminalSession {
     size: ProtocolTerminalSize,
     actor_email: String,
     node_id: Option<String>,
+    transport_status: Option<TerminalTransportStatus>,
+}
+
+struct TerminalSessionInsert {
+    session_id: TerminalSessionId,
+    backend: TerminalBackend,
+    size: ProtocolTerminalSize,
+    config: TerminalSessionConfig,
+    actor_email: String,
+    node_id: Option<String>,
+    transport_status: Option<TerminalTransportStatus>,
 }
 
 impl TerminalSessionRegistry {
@@ -74,69 +93,69 @@ impl TerminalSessionRegistry {
         actor_email: String,
         node_id: Option<String>,
     ) -> Result<broadcast::Sender<TerminalServerMessage>, SessionLimitError> {
-        self.insert_backend(
+        self.insert_backend(TerminalSessionInsert {
             session_id,
-            TerminalBackend::Local(session),
+            backend: TerminalBackend::Local(session),
             size,
             config,
             actor_email,
             node_id,
-        )
+            transport_status: None,
+        })
     }
 
     pub(crate) fn insert_remote(
         &self,
         session_id: TerminalSessionId,
-        command_tx: mpsc::Sender<AgentTerminalCommand>,
+        remote: RemoteTerminalSession,
         size: ProtocolTerminalSize,
         config: TerminalSessionConfig,
         actor_email: String,
-        node_id: String,
     ) -> Result<broadcast::Sender<TerminalServerMessage>, SessionLimitError> {
-        self.insert_backend(
+        self.insert_backend(TerminalSessionInsert {
             session_id,
-            TerminalBackend::Remote { command_tx },
+            backend: TerminalBackend::Remote {
+                command_tx: remote.command_tx,
+            },
             size,
             config,
             actor_email,
-            Some(node_id),
-        )
+            node_id: Some(remote.node_id),
+            transport_status: Some(remote.transport_status),
+        })
     }
 
     fn insert_backend(
         &self,
-        session_id: TerminalSessionId,
-        backend: TerminalBackend,
-        size: ProtocolTerminalSize,
-        config: TerminalSessionConfig,
-        actor_email: String,
-        node_id: Option<String>,
+        request: TerminalSessionInsert,
     ) -> Result<broadcast::Sender<TerminalServerMessage>, SessionLimitError> {
         let Ok(mut sessions) = self.inner.lock() else {
             return Err(SessionLimitError::GlobalCapacity);
         };
-        if sessions.len() >= config.max_sessions {
+        if sessions.len() >= request.config.max_sessions {
             return Err(SessionLimitError::GlobalCapacity);
         }
         let user_count = sessions
             .values()
-            .filter(|s| s.actor_email == actor_email && !s.state.is_terminal())
+            .filter(|s| s.actor_email == request.actor_email && !s.state.is_terminal())
             .count();
-        if user_count >= config.max_sessions_per_user {
+        if user_count >= request.config.max_sessions_per_user {
             return Err(SessionLimitError::PerUser);
         }
         let node_count = sessions
             .values()
-            .filter(|s| s.node_id.as_deref() == node_id.as_deref() && !s.state.is_terminal())
+            .filter(|s| {
+                s.node_id.as_deref() == request.node_id.as_deref() && !s.state.is_terminal()
+            })
             .count();
-        if node_count >= config.max_sessions_per_node {
+        if node_count >= request.config.max_sessions_per_node {
             return Err(SessionLimitError::PerNode);
         }
         let (output_tx, _) = broadcast::channel(OUTPUT_CHANNEL_CAPACITY);
         sessions.insert(
-            session_id,
+            request.session_id,
             TrackedTerminalSession {
-                backend,
+                backend: request.backend,
                 output_tx: output_tx.clone(),
                 replay: VecDeque::with_capacity(OUTPUT_REPLAY_CAPACITY),
                 next_output_sequence: 1,
@@ -144,9 +163,10 @@ impl TerminalSessionRegistry {
                 state: TerminalSessionState::Starting,
                 last_activity: Instant::now(),
                 created_at: Instant::now(),
-                size,
-                actor_email,
-                node_id,
+                size: request.size,
+                actor_email: request.actor_email,
+                node_id: request.node_id,
+                transport_status: request.transport_status,
             },
         );
         Ok(output_tx)
@@ -193,6 +213,7 @@ impl TerminalSessionRegistry {
             size: tracked.size,
             reconnect_token: tracked.reconnect_token.clone(),
             node_id: tracked.node_id.clone(),
+            transport_status: tracked.transport_status.clone(),
         })
     }
 
@@ -352,6 +373,7 @@ impl TerminalSessionRegistry {
                 rows: session.size.rows,
                 age_secs: session.created_at.elapsed().as_secs(),
                 idle_secs: session.last_activity.elapsed().as_secs(),
+                transport_status: session.transport_status.clone(),
             })
             .collect()
     }

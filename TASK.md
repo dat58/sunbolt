@@ -250,9 +250,9 @@ Goal: implement a production transport foundation owned by Sunbolt.
 
 ## Restrictive Network Fallback
 
-- [ ] Evaluate whether long-poll fallback is required.
-- [ ] Document fallback tradeoffs if not implemented immediately.
-- [ ] Ensure terminal UX reports degraded transport clearly when fallback is active.
+- [x] Evaluate whether long-poll fallback is required.
+- [x] Document fallback tradeoffs if not implemented immediately.
+- [x] Ensure terminal UX reports degraded transport clearly when fallback is active.
 
 ## Optional QUIC Fast Path
 

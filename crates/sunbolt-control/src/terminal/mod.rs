@@ -24,7 +24,7 @@ use sunbolt_protocol::{
     AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalClientMessage,
     TerminalError as ProtocolTerminalError, TerminalErrorCode, TerminalExit,
     TerminalReconnectToken, TerminalServerMessage, TerminalSessionId,
-    TerminalSize as ProtocolTerminalSize,
+    TerminalSize as ProtocolTerminalSize, TerminalTransportStatus,
 };
 use sunbolt_terminal::{
     LocalPtySession, TerminalError, TerminalExitStatus, TerminalSessionState, TerminalSize,
@@ -35,7 +35,7 @@ use tokio::{
 };
 
 pub(crate) use session_registry::{
-    TerminalBackend, TerminalSessionRegistry, TerminalSessionSummary,
+    RemoteTerminalSession, TerminalBackend, TerminalSessionRegistry, TerminalSessionSummary,
 };
 
 use crate::{
@@ -294,6 +294,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, user: Us
             node_id: start.node_id,
             size: start.initial_size,
             reconnect_token: state.sessions.reconnect_token(&session_id),
+            transport_status: None,
         },
     )
     .await
@@ -490,6 +491,7 @@ async fn handle_terminal_reattach(
             node_id: target.node_id.clone().map(NodeId),
             size: target.size,
             reconnect_token: Some(target.reconnect_token),
+            transport_status: target.transport_status.clone(),
         },
     )
     .await;
@@ -913,11 +915,14 @@ async fn handle_remote_terminal_socket(
 
     let output_tx = match state.sessions.insert_remote(
         session_id.clone(),
-        connection.command_tx.clone(),
+        RemoteTerminalSession {
+            command_tx: connection.command_tx.clone(),
+            node_id: node_id_text.clone(),
+            transport_status: connection.terminal_transport_status(),
+        },
         initial_size,
         state.terminal_config,
         actor_email.clone(),
-        node_id_text.clone(),
     ) {
         Ok(tx) => tx,
         Err(limit_error) => {
@@ -972,7 +977,12 @@ async fn handle_remote_terminal_socket(
                     .await;
                     break;
                 };
-                let message = agent_event_to_browser_message(event, &node_id, &state.sessions);
+                let message = agent_event_to_browser_message(
+                    event,
+                    &node_id,
+                    &state.sessions,
+                    Some(connection.terminal_transport_status()),
+                );
                 if matches!(message, TerminalServerMessage::Started { .. }) {
                     terminal_opened = true;
                     state.sessions.set_state(&session_id, TerminalSessionState::Active);
@@ -1251,6 +1261,7 @@ pub(crate) fn agent_event_to_browser_message(
     event: AgentTerminalEvent,
     node_id: &NodeId,
     registry: &TerminalSessionRegistry,
+    transport_status: Option<TerminalTransportStatus>,
 ) -> TerminalServerMessage {
     match event {
         AgentTerminalEvent::TerminalStarted { session_id, size } => {
@@ -1259,6 +1270,7 @@ pub(crate) fn agent_event_to_browser_message(
                 node_id: Some(node_id.clone()),
                 size,
                 reconnect_token: None,
+                transport_status,
             }
         }
         AgentTerminalEvent::TerminalOutput { session_id, data } => registry
@@ -1431,6 +1443,7 @@ async fn reattach_local_terminal(
             node_id: None,
             size: ProtocolTerminalSize { cols: 80, rows: 24 },
             reconnect_token: registry.reconnect_token(active_session_id),
+            transport_status: None,
         },
     )
     .await;
@@ -1612,6 +1625,7 @@ mod tests {
             node_id: None,
             size: ProtocolTerminalSize { cols: 80, rows: 24 },
             reconnect_token: Some(TerminalReconnectToken("token-1".to_owned())),
+            transport_status: None,
         };
 
         let value: serde_json::Value = serde_json::from_str(&serialize_server_message(&message))
@@ -1627,7 +1641,8 @@ mod tests {
                     "cols": 80,
                     "rows": 24
                 },
-                "reconnect_token": "token-1"
+                "reconnect_token": "token-1",
+                "transport_status": null
             })
         );
     }
