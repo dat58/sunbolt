@@ -15,6 +15,7 @@ use serde::Serialize;
 use tower_http::trace::TraceLayer;
 
 use crate::{
+    agent::agent_transport_websocket,
     auth::require_auth_middleware,
     config::RuntimeMode,
     error::{ErrorResponse, StartupError},
@@ -43,6 +44,7 @@ pub const AUDIT_LOGS_PATH: &str = "/audit/logs";
 pub const ENROLLMENT_TOKENS_PATH: &str = "/nodes/enrollment-tokens";
 pub const AGENT_ENROLL_PATH: &str = "/agent/enroll";
 pub const AGENT_HEARTBEAT_PATH: &str = "/agent/heartbeat";
+pub const AGENT_TRANSPORT_WS_PATH: &str = "/agent/transport/ws";
 pub const NODES_PATH: &str = "/nodes";
 pub(crate) const NODE_DETAILS_PATH: &str = "/nodes/{node_id}";
 pub(crate) const NODE_REVOKE_PATH: &str = "/nodes/{node_id}/revoke";
@@ -137,6 +139,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         )
         .route(AGENT_ENROLL_PATH, post(agent::agent_enroll))
         .route(AGENT_HEARTBEAT_PATH, post(agent::agent_heartbeat))
+        .route(AGENT_TRANSPORT_WS_PATH, get(agent_transport_websocket))
         .layer(origin_layer)
         .layer(from_fn(security_headers_middleware))
         .layer(TraceLayer::new_for_http())
@@ -224,8 +227,8 @@ fn apply_cors_headers(headers: &mut HeaderMap, origin: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
-        AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
+        ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AGENT_TRANSPORT_WS_PATH,
+        AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
         AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH,
         NODE_DETAILS_PATH, NODE_REVOKE_PATH, TERMINAL_SESSIONS_ACTIVE_PATH,
         TERMINAL_SESSIONS_DETACHED_PATH, TERMINAL_SESSION_TERMINATE_PATH, TERMINAL_WS_PATH,
@@ -254,6 +257,7 @@ mod tests {
         assert_eq!(ENROLLMENT_TOKENS_PATH, "/nodes/enrollment-tokens");
         assert_eq!(AGENT_ENROLL_PATH, "/agent/enroll");
         assert_eq!(AGENT_HEARTBEAT_PATH, "/agent/heartbeat");
+        assert_eq!(AGENT_TRANSPORT_WS_PATH, "/agent/transport/ws");
         assert_eq!(NODES_PATH, "/nodes");
         assert_eq!(NODE_DETAILS_PATH, "/nodes/{node_id}");
         assert_eq!(NODE_REVOKE_PATH, "/nodes/{node_id}/revoke");

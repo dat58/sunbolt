@@ -237,16 +237,16 @@ Goal: implement a production transport foundation owned by Sunbolt.
 
 ## Baseline TCP/443 Transport
 
-- [ ] Implement production baseline over TLS/TCP/443 using WebSocket or HTTP/2.
-- [ ] Ensure agent initiates the connection outbound.
-- [ ] Ensure no inbound access to the agent node is required.
-- [ ] Add heartbeat from agent to control plane.
-- [ ] Add control-plane liveness timeout.
-- [ ] Add agent reconnect with backoff.
-- [ ] Add control-plane detection for duplicate node connections.
-- [ ] Add transport negotiation audit event.
-- [ ] Add agent connected audit event.
-- [ ] Add agent disconnected audit event.
+- [x] Implement production baseline over TLS/TCP/443 using WebSocket or HTTP/2.
+- [x] Ensure agent initiates the connection outbound.
+- [x] Ensure no inbound access to the agent node is required.
+- [x] Add heartbeat from agent to control plane.
+- [x] Add control-plane liveness timeout.
+- [x] Add agent reconnect with backoff.
+- [x] Add control-plane detection for duplicate node connections.
+- [x] Add transport negotiation audit event.
+- [x] Add agent connected audit event.
+- [x] Add agent disconnected audit event.
 
 ## Restrictive Network Fallback
 

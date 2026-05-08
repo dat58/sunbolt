@@ -2,8 +2,13 @@ use std::{collections::HashMap, env, future::Future, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use sunbolt_protocol::{
-    AgentTerminalCommand, AgentTerminalEvent, TerminalExit, TerminalSessionId,
-    TerminalSize as ProtocolTerminalSize,
+    transport::{
+        AgentTransportClientHello, AgentTransportEnvelope, AgentTransportHeartbeat,
+        AgentTransportId, AgentTransportKind, AgentTransportMessageId, AgentTransportPayload,
+        AgentTransportReconnectPolicy,
+    },
+    AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalExit, TerminalSessionId,
+    TerminalSize as ProtocolTerminalSize, PROTOCOL_VERSION,
 };
 use sunbolt_terminal::{
     LocalPtySession, TerminalError as PtyTerminalError, TerminalExitStatus, TerminalSize,
@@ -15,6 +20,7 @@ use tracing::info;
 const DEFAULT_CONTROL_PLANE_URL: &str = "http://127.0.0.1:3000";
 const DEFAULT_NODE_NAME: &str = "local-agent";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const AGENT_TRANSPORT_WS_PATH: &str = "/agent/transport/ws";
 
 /// Returns a stable name for the agent component.
 #[must_use]
@@ -165,6 +171,84 @@ impl AgentConnection {
     #[must_use]
     pub const fn heartbeat_message(&self) -> &AgentHeartbeatMessage {
         &self.heartbeat
+    }
+
+    #[must_use]
+    pub fn transport_endpoint(&self) -> String {
+        websocket_url_for_path(&self.control_plane_url, AGENT_TRANSPORT_WS_PATH)
+    }
+
+    #[must_use]
+    pub fn transport_id(&self) -> AgentTransportId {
+        AgentTransportId(format!("{}-outbound", self.heartbeat.node_id))
+    }
+
+    #[must_use]
+    pub fn transport_client_hello(&self) -> AgentTransportClientHello {
+        AgentTransportClientHello {
+            supported_protocol_versions: vec![PROTOCOL_VERSION],
+            supported_transports: vec![
+                AgentTransportKind::WebSocketTlsTcp443,
+                AgentTransportKind::Http2TlsTcp443,
+            ],
+            preferred_transport: AgentTransportKind::WebSocketTlsTcp443,
+            agent_version: self.heartbeat.agent_version.clone(),
+            credential_fingerprint: self.heartbeat.credential_fingerprint.clone(),
+            resume: None,
+        }
+    }
+
+    #[must_use]
+    pub fn transport_client_hello_envelope(&self) -> AgentTransportEnvelope {
+        AgentTransportEnvelope::current(
+            AgentTransportMessageId::first(),
+            NodeId(self.heartbeat.node_id.clone()),
+            self.transport_id(),
+            AgentTransportPayload::ClientHello {
+                hello: self.transport_client_hello(),
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn heartbeat_envelope(
+        &self,
+        message_id: AgentTransportMessageId,
+    ) -> AgentTransportEnvelope {
+        AgentTransportEnvelope::current(
+            message_id,
+            NodeId(self.heartbeat.node_id.clone()),
+            self.transport_id(),
+            AgentTransportPayload::Heartbeat {
+                heartbeat: AgentTransportHeartbeat::Ping { sent_at_unix_ms: 0 },
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn reconnect_policy(&self) -> AgentTransportReconnectPolicy {
+        AgentTransportReconnectPolicy::production_default()
+    }
+}
+
+/// Agent-side baseline outbound transport settings.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AgentOutboundTransportPlan {
+    pub endpoint: String,
+    pub client_hello: AgentTransportClientHello,
+    pub reconnect_policy: AgentTransportReconnectPolicy,
+    pub heartbeat_interval: Duration,
+}
+
+impl AgentOutboundTransportPlan {
+    #[must_use]
+    pub fn from_connection(connection: &AgentConnection) -> Self {
+        Self {
+            endpoint: connection.transport_endpoint(),
+            client_hello: connection.transport_client_hello(),
+            reconnect_policy: connection.reconnect_policy(),
+            heartbeat_interval: HEARTBEAT_INTERVAL,
+        }
     }
 }
 
@@ -487,6 +571,17 @@ fn join_url_path(base: &str, path: &str) -> String {
     format!("{}{}", base.trim_end_matches('/'), path)
 }
 
+fn websocket_url_for_path(base: &str, path: &str) -> String {
+    let endpoint = join_url_path(base, path);
+    if let Some(rest) = endpoint.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = endpoint.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        endpoint
+    }
+}
+
 fn terminal_size_from_protocol(size: ProtocolTerminalSize) -> TerminalSize {
     TerminalSize::new(size.cols.max(1), size.rows.max(1))
 }
@@ -514,9 +609,17 @@ fn hostname_from_lookup(lookup: &mut impl FnMut(&str) -> Option<String>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        component_name, AgentConfig, AgentConnection, AgentEnrollmentRequest,
-        AgentEnrollmentResponse, AgentHeartbeatMessage, AgentHeartbeatStatus, AgentRuntime,
-        AgentTerminalRuntime, LocalNodeInfo, LogLevel, DEFAULT_CONTROL_PLANE_URL,
+        component_name, websocket_url_for_path, AgentConfig, AgentConnection,
+        AgentEnrollmentRequest, AgentEnrollmentResponse, AgentHeartbeatMessage,
+        AgentHeartbeatStatus, AgentOutboundTransportPlan, AgentRuntime, AgentTerminalRuntime,
+        LocalNodeInfo, LogLevel, DEFAULT_CONTROL_PLANE_URL,
+    };
+    use sunbolt_protocol::{
+        transport::{
+            AgentTransportHeartbeat, AgentTransportKind, AgentTransportMessageId,
+            AgentTransportPayload,
+        },
+        PROTOCOL_VERSION,
     };
     use sunbolt_protocol::{
         AgentTerminalCommand, AgentTerminalEvent, TerminalSessionId, TerminalSize,
@@ -608,6 +711,67 @@ mod tests {
             "https://control.example.test/agent/heartbeat"
         );
         assert_eq!(connection.heartbeat_message().node_id, "node-1");
+    }
+
+    #[test]
+    fn agent_connection_builds_outbound_websocket_transport_endpoint() {
+        assert_eq!(
+            websocket_url_for_path("https://control.example.test/", "/agent/transport/ws"),
+            "wss://control.example.test/agent/transport/ws"
+        );
+        assert_eq!(
+            websocket_url_for_path("http://127.0.0.1:3000", "/agent/transport/ws"),
+            "ws://127.0.0.1:3000/agent/transport/ws"
+        );
+    }
+
+    #[test]
+    fn outbound_transport_plan_uses_enrolled_node_identity() {
+        let config = AgentConfig {
+            control_plane_url: "https://control.example.test".to_owned(),
+            node_name: "node-a".to_owned(),
+            enrollment_token: None,
+        };
+        let enrollment = AgentEnrollmentResponse {
+            node_id: "node-1".to_owned(),
+            credential_fingerprint: "dev-fingerprint".to_owned(),
+        };
+        let info = LocalNodeInfo {
+            hostname: "host-a".to_owned(),
+            os: "linux".to_owned(),
+            architecture: "x86_64".to_owned(),
+            agent_version: "0.1.0".to_owned(),
+        };
+        let connection = AgentConnection::new(&config, &enrollment, &info);
+
+        let plan = AgentOutboundTransportPlan::from_connection(&connection);
+        let hello_envelope = connection.transport_client_hello_envelope();
+        let heartbeat = connection.heartbeat_envelope(AgentTransportMessageId(2));
+
+        assert_eq!(
+            plan.endpoint,
+            "wss://control.example.test/agent/transport/ws"
+        );
+        assert_eq!(
+            plan.client_hello.supported_protocol_versions,
+            vec![PROTOCOL_VERSION]
+        );
+        assert_eq!(
+            plan.client_hello.preferred_transport,
+            AgentTransportKind::WebSocketTlsTcp443
+        );
+        assert_eq!(
+            hello_envelope.payload,
+            AgentTransportPayload::ClientHello {
+                hello: plan.client_hello
+            }
+        );
+        assert_eq!(
+            heartbeat.payload,
+            AgentTransportPayload::Heartbeat {
+                heartbeat: AgentTransportHeartbeat::Ping { sent_at_unix_ms: 0 },
+            }
+        );
     }
 
     #[test]

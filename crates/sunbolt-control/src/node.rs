@@ -225,6 +225,45 @@ impl NodeEnrollmentRegistry {
         Ok(node_view(&state.nodes[node_index], Some(Instant::now())))
     }
 
+    pub(crate) fn authenticate_transport(
+        &self,
+        node_id: &str,
+        credential_fingerprint: &str,
+        agent_version: &str,
+    ) -> Result<NodeView, NodeConnectionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let node_index = state
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or(NodeConnectionError::UnknownNode)?;
+        let node = &state.nodes[node_index];
+        if node.status == NodeStatus::Revoked {
+            return Err(NodeConnectionError::Revoked);
+        }
+        let credential_matches = state.credentials.iter().any(|credential| {
+            credential.node_id == node.id
+                && credential.credential_fingerprint == credential_fingerprint
+        });
+        if !credential_matches {
+            return Err(NodeConnectionError::InvalidCredential);
+        }
+
+        agent_version.clone_into(&mut state.nodes[node_index].agent_version);
+        state.nodes[node_index].status = NodeStatus::Online;
+        let internal_node_id = state.nodes[node_index].id;
+        state.heartbeats.push(NodeHeartbeatRecord {
+            node_id: internal_node_id,
+            status: NodeStatus::Online,
+            received_at: Instant::now(),
+        });
+
+        Ok(node_view(&state.nodes[node_index], Some(Instant::now())))
+    }
+
     pub(crate) fn list_nodes(&self) -> Vec<NodeView> {
         let state = self
             .inner

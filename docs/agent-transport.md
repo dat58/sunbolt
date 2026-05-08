@@ -76,4 +76,6 @@ Transport metrics should cover connection state, heartbeat latency, reconnect co
 
 ## Current Development Path
 
-The current local agent flow uses enrollment and heartbeat HTTP endpoints for development iteration. The production transport abstraction and TLS/TCP/443 baseline remain follow-up implementation work.
+The current local agent flow still supports enrollment and heartbeat HTTP endpoints for development iteration.
+
+The baseline Sunbolt-native transport now has a WebSocket-over-TLS/TCP/443 control-plane route at `/agent/transport/ws`. After enrollment, an agent can derive an outbound `wss://` endpoint, send a versioned client hello with its node identity fingerprint, and use the negotiated channel for heartbeats and terminal command/event envelopes. The control plane applies a liveness timeout, replaces duplicate node transports, and records transport negotiation, agent connected, and agent disconnected audit events.

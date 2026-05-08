@@ -66,6 +66,16 @@ pub(crate) enum NodeConnectionError {
     Revoked,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum AgentTransportConnectionError {
+    MissingClientHello,
+    InvalidEnvelope,
+    UnsupportedProtocolVersion,
+    UnsupportedTransport,
+    AuthenticationFailed,
+    Revoked,
+}
+
 #[derive(Debug, Error)]
 pub enum StartupError {
     #[error("{0}")]
