@@ -83,6 +83,7 @@ Goal: replace the MVP-first planning documents with production-first guidance.
 - [x] Add `docs/security-model.md`.
 - [x] Add `docs/terminal-lifecycle.md`.
 - [x] Add `docs/agent-transport.md`.
+- [x] Add `docs/quic-fast-path.md`.
 - [x] Add `docs/ui-architecture.md`.
 - [x] Add `docs/audit-events.md`.
 
@@ -256,11 +257,11 @@ Goal: implement a production transport foundation owned by Sunbolt.
 
 ## Optional QUIC Fast Path
 
-- [ ] Create a QUIC design spike.
-- [ ] Evaluate Rust QUIC implementation choices.
-- [ ] Confirm UDP/443 fallback behavior when blocked.
-- [ ] Define how QUIC maps terminal streams and control messages.
-- [ ] Implement QUIC only after the transport abstraction is stable.
+- [x] Create a QUIC design spike.
+- [x] Evaluate Rust QUIC implementation choices.
+- [x] Confirm UDP/443 fallback behavior when blocked.
+- [x] Define how QUIC maps terminal streams and control messages.
+- [x] Implement QUIC only after the transport abstraction is stable.
 
 ## Tests
 

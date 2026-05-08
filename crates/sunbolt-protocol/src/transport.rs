@@ -110,12 +110,106 @@ impl AgentTransportKind {
         matches!(self, Self::WebSocketTlsTcp443 | Self::Http2TlsTcp443)
     }
 
+    /// Returns true for the optional UDP/443 fast path.
+    #[must_use]
+    pub const fn is_udp443_fast_path(self) -> bool {
+        matches!(self, Self::QuicUdp443)
+    }
+
     /// Returns true when the transport is the restrictive-network HTTP fallback.
     #[must_use]
     pub const fn is_restrictive_network_fallback(self) -> bool {
         matches!(self, Self::LongPollHttps)
     }
 }
+
+/// QUIC implementation selected for the Sunbolt fast-path adapter.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum AgentQuicImplementation {
+    Quinn,
+}
+
+/// Logical stream roles used by the QUIC fast path.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum AgentQuicStreamKind {
+    Control,
+    TerminalInput,
+    TerminalOutput,
+    TerminalResize,
+    TerminalLifecycle,
+}
+
+/// Mapping from protocol messages to QUIC stream behavior.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct AgentQuicStreamMapping {
+    pub kind: AgentQuicStreamKind,
+    pub bidirectional: bool,
+    pub ordered: bool,
+    pub carries_terminal_output_sequence: bool,
+}
+
+/// Design contract for the optional QUIC fast path.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct AgentQuicFastPathPlan {
+    pub implementation: AgentQuicImplementation,
+    pub udp_port: u16,
+    pub alpn: &'static str,
+    pub fallback_order: &'static [AgentTransportKind],
+    pub stream_mapping: &'static [AgentQuicStreamMapping],
+}
+
+impl AgentQuicFastPathPlan {
+    /// Returns the current QUIC design contract.
+    #[must_use]
+    pub const fn current() -> Self {
+        Self {
+            implementation: AgentQuicImplementation::Quinn,
+            udp_port: 443,
+            alpn: "sunbolt-agent/1",
+            fallback_order: &QUIC_FALLBACK_ORDER,
+            stream_mapping: &QUIC_STREAM_MAPPING,
+        }
+    }
+}
+
+const QUIC_FALLBACK_ORDER: [AgentTransportKind; 3] = [
+    AgentTransportKind::WebSocketTlsTcp443,
+    AgentTransportKind::Http2TlsTcp443,
+    AgentTransportKind::LongPollHttps,
+];
+
+const QUIC_STREAM_MAPPING: [AgentQuicStreamMapping; 5] = [
+    AgentQuicStreamMapping {
+        kind: AgentQuicStreamKind::Control,
+        bidirectional: true,
+        ordered: true,
+        carries_terminal_output_sequence: false,
+    },
+    AgentQuicStreamMapping {
+        kind: AgentQuicStreamKind::TerminalInput,
+        bidirectional: false,
+        ordered: true,
+        carries_terminal_output_sequence: false,
+    },
+    AgentQuicStreamMapping {
+        kind: AgentQuicStreamKind::TerminalOutput,
+        bidirectional: false,
+        ordered: true,
+        carries_terminal_output_sequence: true,
+    },
+    AgentQuicStreamMapping {
+        kind: AgentQuicStreamKind::TerminalResize,
+        bidirectional: false,
+        ordered: true,
+        carries_terminal_output_sequence: false,
+    },
+    AgentQuicStreamMapping {
+        kind: AgentQuicStreamKind::TerminalLifecycle,
+        bidirectional: true,
+        ordered: true,
+        carries_terminal_output_sequence: false,
+    },
+];
 
 /// Lifecycle states for an outbound agent transport connection.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -499,7 +593,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        validate_next_terminal_output_sequence, AgentTransportClientHello, AgentTransportEnvelope,
+        validate_next_terminal_output_sequence, AgentQuicFastPathPlan, AgentQuicImplementation,
+        AgentQuicStreamKind, AgentTransportClientHello, AgentTransportEnvelope,
         AgentTransportError, AgentTransportErrorCode, AgentTransportHeartbeat, AgentTransportId,
         AgentTransportKind, AgentTransportLifecycleState, AgentTransportMessageId,
         AgentTransportMetrics, AgentTransportPayload, AgentTransportProtocolError,
@@ -578,7 +673,34 @@ mod tests {
         assert!(AgentTransportKind::Http2TlsTcp443.is_tcp443_baseline());
         assert!(!AgentTransportKind::QuicUdp443.is_tcp443_baseline());
         assert!(!AgentTransportKind::LongPollHttps.is_tcp443_baseline());
+        assert!(AgentTransportKind::QuicUdp443.is_udp443_fast_path());
+        assert!(!AgentTransportKind::WebSocketTlsTcp443.is_udp443_fast_path());
         assert!(AgentTransportKind::LongPollHttps.is_restrictive_network_fallback());
+    }
+
+    #[test]
+    fn quic_fast_path_plan_preserves_tcp_and_long_poll_fallbacks() {
+        let plan = AgentQuicFastPathPlan::current();
+
+        assert_eq!(plan.implementation, AgentQuicImplementation::Quinn);
+        assert_eq!(plan.udp_port, 443);
+        assert_eq!(plan.alpn, "sunbolt-agent/1");
+        assert_eq!(
+            plan.fallback_order,
+            &[
+                AgentTransportKind::WebSocketTlsTcp443,
+                AgentTransportKind::Http2TlsTcp443,
+                AgentTransportKind::LongPollHttps,
+            ]
+        );
+        assert!(plan.stream_mapping.iter().any(|mapping| {
+            mapping.kind == AgentQuicStreamKind::TerminalOutput
+                && mapping.ordered
+                && mapping.carries_terminal_output_sequence
+        }));
+        assert!(plan.stream_mapping.iter().any(|mapping| {
+            mapping.kind == AgentQuicStreamKind::Control && mapping.bidirectional
+        }));
     }
 
     #[test]

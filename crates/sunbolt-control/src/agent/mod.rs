@@ -580,6 +580,13 @@ fn validate_client_hello(
     validate_client_hello_for_transport(hello, AgentTransportKind::WebSocketTlsTcp443)
 }
 
+#[cfg(test)]
+fn validate_quic_client_hello(
+    hello: &AgentTransportClientHello,
+) -> Result<(), AgentTransportConnectionError> {
+    validate_client_hello_for_transport(hello, AgentTransportKind::QuicUdp443)
+}
+
 fn validate_client_hello_for_transport(
     hello: &AgentTransportClientHello,
     required_transport: AgentTransportKind,
@@ -898,7 +905,7 @@ fn transport_error_for_connection(error: AgentTransportConnectionError) -> Agent
         ),
         AgentTransportConnectionError::UnsupportedTransport => transport_error(
             AgentTransportErrorCode::UnsupportedTransport,
-            "agent transport must support websocket over TLS/TCP/443",
+            "agent transport does not support the required transport",
         ),
         AgentTransportConnectionError::AuthenticationFailed => transport_error(
             AgentTransportErrorCode::AuthenticationFailed,
@@ -919,8 +926,8 @@ fn millis(duration: Duration) -> u64 {
 mod tests {
     use super::{
         handle_agent_transport_envelope, validate_client_hello,
-        validate_client_hello_for_transport, AgentConnectionRegistration, AgentConnectionRegistry,
-        AgentTransportHandshake,
+        validate_client_hello_for_transport, validate_quic_client_hello,
+        AgentConnectionRegistration, AgentConnectionRegistry, AgentTransportHandshake,
     };
     use sunbolt_protocol::{
         transport::{
@@ -937,6 +944,7 @@ mod tests {
     fn client_hello_requires_supported_protocol_and_websocket_transport() {
         let mut hello = valid_hello();
         assert!(validate_client_hello(&hello).is_ok());
+        assert!(validate_quic_client_hello(&hello).is_ok());
 
         hello.supported_protocol_versions = vec![PROTOCOL_VERSION + 1];
         assert!(validate_client_hello(&hello).is_err());
@@ -944,6 +952,7 @@ mod tests {
         let mut hello = valid_hello();
         hello.supported_transports = vec![AgentTransportKind::QuicUdp443];
         assert!(validate_client_hello(&hello).is_err());
+        assert!(validate_quic_client_hello(&hello).is_ok());
 
         let mut hello = valid_hello();
         hello.supported_transports = vec![AgentTransportKind::LongPollHttps];
@@ -1075,10 +1084,11 @@ mod tests {
         AgentTransportClientHello {
             supported_protocol_versions: vec![PROTOCOL_VERSION],
             supported_transports: vec![
+                AgentTransportKind::QuicUdp443,
                 AgentTransportKind::WebSocketTlsTcp443,
                 AgentTransportKind::Http2TlsTcp443,
             ],
-            preferred_transport: AgentTransportKind::WebSocketTlsTcp443,
+            preferred_transport: AgentTransportKind::QuicUdp443,
             agent_version: "0.1.0".to_owned(),
             credential_fingerprint: "dev-fingerprint".to_owned(),
             resume: None,

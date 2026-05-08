@@ -21,6 +21,7 @@ const DEFAULT_CONTROL_PLANE_URL: &str = "http://127.0.0.1:3000";
 const DEFAULT_NODE_NAME: &str = "local-agent";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const AGENT_TRANSPORT_WS_PATH: &str = "/agent/transport/ws";
+const AGENT_TRANSPORT_QUIC_PATH: &str = "/agent/transport/quic";
 const AGENT_TRANSPORT_LONG_POLL_PATH: &str = "/agent/transport/long-poll";
 
 /// Returns a stable name for the agent component.
@@ -180,6 +181,11 @@ impl AgentConnection {
     }
 
     #[must_use]
+    pub fn quic_transport_endpoint(&self) -> String {
+        quic_url_for_path(&self.control_plane_url, AGENT_TRANSPORT_QUIC_PATH)
+    }
+
+    #[must_use]
     pub fn long_poll_transport_endpoint(&self) -> String {
         join_url_path(&self.control_plane_url, AGENT_TRANSPORT_LONG_POLL_PATH)
     }
@@ -194,11 +200,12 @@ impl AgentConnection {
         AgentTransportClientHello {
             supported_protocol_versions: vec![PROTOCOL_VERSION],
             supported_transports: vec![
+                AgentTransportKind::QuicUdp443,
                 AgentTransportKind::WebSocketTlsTcp443,
                 AgentTransportKind::Http2TlsTcp443,
                 AgentTransportKind::LongPollHttps,
             ],
-            preferred_transport: AgentTransportKind::WebSocketTlsTcp443,
+            preferred_transport: AgentTransportKind::QuicUdp443,
             agent_version: self.heartbeat.agent_version.clone(),
             credential_fingerprint: self.heartbeat.credential_fingerprint.clone(),
             resume: None,
@@ -242,7 +249,9 @@ impl AgentConnection {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AgentOutboundTransportPlan {
     pub endpoint: String,
+    pub quic_fast_path_endpoint: String,
     pub long_poll_fallback_endpoint: String,
+    pub transport_attempt_order: Vec<AgentTransportKind>,
     pub client_hello: AgentTransportClientHello,
     pub reconnect_policy: AgentTransportReconnectPolicy,
     pub heartbeat_interval: Duration,
@@ -253,7 +262,14 @@ impl AgentOutboundTransportPlan {
     pub fn from_connection(connection: &AgentConnection) -> Self {
         Self {
             endpoint: connection.transport_endpoint(),
+            quic_fast_path_endpoint: connection.quic_transport_endpoint(),
             long_poll_fallback_endpoint: connection.long_poll_transport_endpoint(),
+            transport_attempt_order: vec![
+                AgentTransportKind::QuicUdp443,
+                AgentTransportKind::WebSocketTlsTcp443,
+                AgentTransportKind::Http2TlsTcp443,
+                AgentTransportKind::LongPollHttps,
+            ],
             client_hello: connection.transport_client_hello(),
             reconnect_policy: connection.reconnect_policy(),
             heartbeat_interval: HEARTBEAT_INTERVAL,
@@ -591,6 +607,17 @@ fn websocket_url_for_path(base: &str, path: &str) -> String {
     }
 }
 
+fn quic_url_for_path(base: &str, path: &str) -> String {
+    let endpoint = join_url_path(base, path);
+    if let Some(rest) = endpoint.strip_prefix("https://") {
+        format!("quic://{rest}")
+    } else if let Some(rest) = endpoint.strip_prefix("http://") {
+        format!("quic://{rest}")
+    } else {
+        endpoint
+    }
+}
+
 fn terminal_size_from_protocol(size: ProtocolTerminalSize) -> TerminalSize {
     TerminalSize::new(size.cols.max(1), size.rows.max(1))
 }
@@ -618,7 +645,7 @@ fn hostname_from_lookup(lookup: &mut impl FnMut(&str) -> Option<String>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        component_name, websocket_url_for_path, AgentConfig, AgentConnection,
+        component_name, quic_url_for_path, websocket_url_for_path, AgentConfig, AgentConnection,
         AgentEnrollmentRequest, AgentEnrollmentResponse, AgentHeartbeatMessage,
         AgentHeartbeatStatus, AgentOutboundTransportPlan, AgentRuntime, AgentTerminalRuntime,
         LocalNodeInfo, LogLevel, DEFAULT_CONTROL_PLANE_URL,
@@ -735,6 +762,18 @@ mod tests {
     }
 
     #[test]
+    fn agent_connection_builds_quic_fast_path_endpoint() {
+        assert_eq!(
+            quic_url_for_path("https://control.example.test/", "/agent/transport/quic"),
+            "quic://control.example.test/agent/transport/quic"
+        );
+        assert_eq!(
+            quic_url_for_path("http://127.0.0.1:3000", "/agent/transport/quic"),
+            "quic://127.0.0.1:3000/agent/transport/quic"
+        );
+    }
+
+    #[test]
     fn agent_connection_builds_restrictive_network_fallback_endpoint() {
         let config = AgentConfig {
             control_plane_url: "https://control.example.test/".to_owned(),
@@ -758,6 +797,10 @@ mod tests {
             connection.long_poll_transport_endpoint(),
             "https://control.example.test/agent/transport/long-poll"
         );
+        assert!(connection
+            .transport_client_hello()
+            .supported_transports
+            .contains(&AgentTransportKind::QuicUdp443));
         assert!(connection
             .transport_client_hello()
             .supported_transports
@@ -792,8 +835,21 @@ mod tests {
             "wss://control.example.test/agent/transport/ws"
         );
         assert_eq!(
+            plan.quic_fast_path_endpoint,
+            "quic://control.example.test/agent/transport/quic"
+        );
+        assert_eq!(
             plan.long_poll_fallback_endpoint,
             "https://control.example.test/agent/transport/long-poll"
+        );
+        assert_eq!(
+            plan.transport_attempt_order,
+            vec![
+                AgentTransportKind::QuicUdp443,
+                AgentTransportKind::WebSocketTlsTcp443,
+                AgentTransportKind::Http2TlsTcp443,
+                AgentTransportKind::LongPollHttps,
+            ]
         );
         assert_eq!(
             plan.client_hello.supported_protocol_versions,
@@ -801,7 +857,7 @@ mod tests {
         );
         assert_eq!(
             plan.client_hello.preferred_transport,
-            AgentTransportKind::WebSocketTlsTcp443
+            AgentTransportKind::QuicUdp443
         );
         assert_eq!(
             hello_envelope.payload,

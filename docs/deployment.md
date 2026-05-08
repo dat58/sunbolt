@@ -79,6 +79,11 @@ Production transport priorities:
 
 QUIC must not be the only production path because many enterprise networks block UDP.
 
+When QUIC is enabled, expose UDP/443 at the edge and keep TCP/443 available for
+the baseline WebSocket or HTTP/2 transport. The agent should try the QUIC
+candidate endpoint first, then fall back to TCP/443, then use long-poll HTTPS
+only when streaming transports are unavailable.
+
 ## Database Migrations
 
 Run migrations before starting a new application version:
