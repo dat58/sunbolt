@@ -1,6 +1,25 @@
-# Sunbolt Deployment Notes
+# Sunbolt Deployment
 
-These notes cover the current single control-plane deployment shape. Sunbolt should be placed behind a TLS-terminating reverse proxy, with PostgreSQL reachable only from trusted application hosts.
+These notes describe the production deployment direction for Sunbolt. A production deployment runs the control plane behind a TLS-terminating reverse proxy, uses PostgreSQL for durable state, and accepts outbound-only agent connections from managed nodes.
+
+Target production flow:
+
+```text
+Browser -> HTTPS/WebSocket -> Control Plane -> Sunbolt Native Outbound Agent Channel -> Agent Node -> PTY
+```
+
+## Runtime Modes
+
+Sunbolt has exactly two runtime modes:
+
+- `development`
+- `production`
+
+Use `development` for local operator work, temporary in-memory scaffolding, local bootstrap credentials, and permissive local origins.
+
+Use `production` for any deployment that protects real systems or real user accounts. Production mode must reject development-only shortcuts.
+
+Preview, staging, and test deployments should choose one of these two modes with environment-specific configuration. Do not add a third mode for deployment labels.
 
 ## Build and Run
 
@@ -18,39 +37,47 @@ docker run --rm --env-file config/production.env -p 3000:3000 sunbolt:latest
 
 The image starts `sunbolt-control` by default and also includes the `sunbolt-agent` binary for managed-node deployments.
 
-## Configuration
+## Production Configuration
 
 Start from `config/production.env.example` and set deployment-specific values:
 
-- `SUNBOLT_DATABASE_URL` must point at the production PostgreSQL database.
-- `SUNBOLT_PUBLIC_URL` and `SUNBOLT_ALLOWED_ORIGINS` must match the HTTPS origin users access.
-- `SUNBOLT_COOKIE_SECURE=true` is required when serving through HTTPS.
-- `SUNBOLT_DEV_BOOTSTRAP_ADMIN=false` prevents development bootstrap credentials in production.
-- Terminal session limits and timeouts should be sized for the deployment and reviewed before enabling broad access.
+- `SUNBOLT_ENV=production`.
+- `SUNBOLT_DATABASE_URL` points at the production PostgreSQL database.
+- `SUNBOLT_PUBLIC_URL` matches the HTTPS origin users access.
+- `SUNBOLT_ALLOWED_ORIGINS` lists explicit HTTPS browser origins. Do not use `*`.
+- `SUNBOLT_COOKIE_SECURE=true`.
+- `SUNBOLT_DEV_BOOTSTRAP_ADMIN=false`.
+- `SUNBOLT_REQUIRE_TERMINAL_STEP_UP_MFA=true` unless an approved policy says otherwise.
+- Terminal session limits and timeouts are sized for the deployment.
 
-Keep production secrets out of git and inject them through the platform secret manager or an environment file with restricted filesystem permissions.
+Production startup should fail clearly when required durable storage, public URL, cookie security, allowed origins, or secrets are missing or unsafe.
+
+Keep production secrets out of git. Inject them through the platform secret manager or an environment file with restricted filesystem permissions.
 
 ## Reverse Proxy and HTTPS
 
 Use `deploy/nginx/sunbolt.conf` as a starting point. The reverse proxy must:
 
-- Redirect HTTP to HTTPS.
+- Redirect HTTP to HTTPS for browser traffic.
 - Terminate TLS with a valid certificate.
 - Forward `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
 - Preserve WebSocket upgrade headers for `/terminal/ws`.
 - Use long enough proxy read/send timeouts for active terminal sessions.
+- Route the production agent transport endpoint over TLS/TCP/443 when implemented.
 
-Do not expose browser terminal routes over plain HTTP in production.
+Do not expose browser terminal routes over plain HTTP in production. The public edge for browser terminal access must use TLS.
 
-## Health Checks
+## Agent Connectivity
 
-The control plane exposes:
+Agent nodes must not require inbound firewall access. Agents initiate outbound connections to the control plane.
 
-```text
-GET /health
-```
+Production transport priorities:
 
-A healthy process returns HTTP 200 with a small JSON body.
+1. Baseline: TLS over TCP/443 using WebSocket or HTTP/2.
+2. Optional fast path: QUIC over UDP/443 when the network allows it.
+3. Restrictive-network fallback: long-poll or request/response control channel if required.
+
+QUIC must not be the only production path because many enterprise networks block UDP.
 
 ## Database Migrations
 
@@ -68,6 +95,18 @@ psql "$SUNBOLT_DATABASE_URL" -c "select 1"
 
 Run migrations from a trusted operator workstation or one-off deployment job, not from every application container at startup.
 
+## Health Checks
+
+The control plane exposes:
+
+```text
+GET /health
+```
+
+A healthy process returns HTTP 200 with a small JSON body.
+
+Health checks confirm process availability. Production readiness also requires database connectivity, migration state, agent transport health, and audit log write availability.
+
 ## Backup and Restore
 
 Back up PostgreSQL before upgrades and on a regular schedule:
@@ -82,4 +121,16 @@ Restore into an empty database:
 pg_restore --clean --if-exists --dbname="$SUNBOLT_DATABASE_URL" sunbolt-YYYYMMDDHHMMSS.dump
 ```
 
-After restore, run the audit chain verification tooling before returning the instance to service. Keep backup files encrypted at rest, restrict operator access, and test restores periodically.
+After restore, run audit chain verification before returning the instance to service. Keep backup files encrypted at rest, restrict operator access, and test restores periodically.
+
+## Release Gate
+
+Before treating a build as production-ready:
+
+- Run `cargo fmt --all -- --check`.
+- Run `cargo test`.
+- Run `cargo clippy --all-targets --all-features -- -D warnings`.
+- Run database migration verification when migrations changed.
+- Validate terminal open, detach, reattach, resize, and terminate behavior.
+- Validate agent enrollment, heartbeat, reconnect, and revocation behavior.
+- Validate UI behavior on mobile, tablet, laptop, and desktop viewports.

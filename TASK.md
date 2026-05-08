@@ -77,14 +77,14 @@ Goal: replace the MVP-first planning documents with production-first guidance.
 
 ## Follow-up Documentation
 
-- [ ] Update `README.md` to describe the production direction.
-- [ ] Update `docs/local-development.md` to distinguish development-only shortcuts from production behavior.
-- [ ] Update `docs/deployment.md` for the two runtime modes.
-- [ ] Add `docs/security-model.md`.
-- [ ] Add `docs/terminal-lifecycle.md`.
-- [ ] Add `docs/agent-transport.md`.
-- [ ] Add `docs/ui-architecture.md`.
-- [ ] Add `docs/audit-events.md`.
+- [x] Update `README.md` to describe the production direction.
+- [x] Update `docs/local-development.md` to distinguish development-only shortcuts from production behavior.
+- [x] Update `docs/deployment.md` for the two runtime modes.
+- [x] Add `docs/security-model.md`.
+- [x] Add `docs/terminal-lifecycle.md`.
+- [x] Add `docs/agent-transport.md`.
+- [x] Add `docs/ui-architecture.md`.
+- [x] Add `docs/audit-events.md`.
 
 ---
 
