@@ -225,15 +225,15 @@ Goal: implement a production transport foundation owned by Sunbolt.
 
 ## Transport Abstraction
 
-- [ ] Define an `AgentTransport` trait or equivalent boundary.
-- [ ] Define transport connection lifecycle states.
-- [ ] Define transport error types.
-- [ ] Define transport metrics fields.
-- [ ] Define transport negotiation messages.
-- [ ] Define transport heartbeat messages.
-- [ ] Define transport reconnect behavior.
-- [ ] Define message ID requirements.
-- [ ] Define terminal stream sequence number requirements.
+- [x] Define an `AgentTransport` trait or equivalent boundary.
+- [x] Define transport connection lifecycle states.
+- [x] Define transport error types.
+- [x] Define transport metrics fields.
+- [x] Define transport negotiation messages.
+- [x] Define transport heartbeat messages.
+- [x] Define transport reconnect behavior.
+- [x] Define message ID requirements.
+- [x] Define terminal stream sequence number requirements.
 
 ## Baseline TCP/443 Transport
 
