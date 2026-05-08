@@ -11,7 +11,7 @@ use std::{
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Extension, Path, State,
     },
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -19,6 +19,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use sunbolt_audit::{AuditEventInput, AuditEventKind, AuditLog};
+use sunbolt_auth::{Permission, User};
 use sunbolt_protocol::{
     AgentTerminalCommand, AgentTerminalEvent, NodeId, TerminalClientMessage,
     TerminalError as ProtocolTerminalError, TerminalErrorCode, TerminalExit,
@@ -33,10 +34,12 @@ use tokio::{
     task,
 };
 
-pub(crate) use session_registry::TerminalSessionRegistry;
+pub(crate) use session_registry::{
+    TerminalBackend, TerminalSessionRegistry, TerminalSessionSummary,
+};
 
 use crate::{
-    auth::authorize_terminal_request,
+    auth::{authorize_terminal_request, AuthenticatedUser},
     config::TerminalSessionConfig,
     error::{ErrorResponse, TerminalAuthorizationError},
     routing::{NodeRoute, NodeRouter, RouteRequest},
@@ -50,6 +53,97 @@ const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TerminalSessionListResponse {
+    sessions: Vec<TerminalSessionSummary>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TerminalTerminateResponse {
+    session_id: String,
+    terminated: bool,
+}
+
+pub(crate) async fn list_active_terminal_sessions(
+    State(state): State<AppState>,
+    Extension(AuthenticatedUser(user)): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    Json(TerminalSessionListResponse {
+        sessions: state.sessions.list_sessions_for_actor(
+            &user.email,
+            &[
+                TerminalSessionState::Active,
+                TerminalSessionState::Reattaching,
+            ],
+        ),
+    })
+}
+
+pub(crate) async fn list_detached_terminal_sessions(
+    State(state): State<AppState>,
+    Extension(AuthenticatedUser(user)): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    Json(TerminalSessionListResponse {
+        sessions: state
+            .sessions
+            .list_sessions_for_actor(&user.email, &[TerminalSessionState::Detached]),
+    })
+}
+
+pub(crate) async fn terminate_terminal_session(
+    State(state): State<AppState>,
+    Extension(AuthenticatedUser(user)): Extension<AuthenticatedUser>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let session_id = TerminalSessionId(session_id);
+    if !state.sessions.owner_matches(&session_id, &user.email) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "terminal session was not found",
+            }),
+        )
+            .into_response();
+    }
+    if !authorize_session_terminate(&state, &user, &session_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "terminal terminate is not permitted for this session",
+            }),
+        )
+            .into_response();
+    }
+
+    let backend = state.sessions.terminate(&session_id);
+    let Some(backend) = backend else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "terminal session was not found",
+            }),
+        )
+            .into_response();
+    };
+    if let TerminalBackend::Remote { command_tx } = backend {
+        let _ = command_tx
+            .send(AgentTerminalCommand::CloseTerminal {
+                session_id: session_id.clone(),
+            })
+            .await;
+    }
+    state.audit.record(AuditEventInput {
+        kind: AuditEventKind::TerminalTerminated,
+        actor_email: Some(user.email),
+        message: format!("terminal session {} explicitly terminated", session_id.0),
+    });
+    Json(TerminalTerminateResponse {
+        session_id: session_id.0,
+        terminated: true,
+    })
+    .into_response()
+}
 
 pub(crate) async fn terminal_websocket(
     State(state): State<AppState>,
@@ -104,12 +198,13 @@ pub(crate) async fn terminal_websocket(
             .into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, user.email))
+    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, user))
         .into_response()
 }
 
 #[allow(clippy::too_many_lines)]
-async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_email: String) {
+async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, user: User) {
+    let actor_email = user.email.clone();
     let Some(handshake) = receive_start_message(&mut socket).await else {
         return;
     };
@@ -120,8 +215,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
             session_id,
             reconnect_token,
         } => {
-            handle_local_terminal_reattach(socket, state, actor_email, session_id, reconnect_token)
-                .await;
+            handle_terminal_reattach(socket, state, user, session_id, reconnect_token).await;
             return;
         }
     };
@@ -228,9 +322,15 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
     let mut output_rx = output_tx.subscribe();
     let output_session = Arc::clone(&session);
     let output_session_id = session_id.clone();
+    let output_registry = state.sessions.clone();
 
     let output_reader = task::spawn_blocking(move || {
-        read_pty_output(output_session, output_session_id, output_tx);
+        read_pty_output(
+            output_registry,
+            output_session,
+            output_session_id,
+            output_tx,
+        );
     });
 
     let mut idle_check = tokio::time::interval(IDLE_CHECK_INTERVAL);
@@ -247,7 +347,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
                 state.sessions.touch(&session_id);
                 let is_terminal_exit = matches!(output, TerminalServerMessage::Exited { .. });
                 if is_terminal_exit {
-                    state.sessions.set_state(&session_id, TerminalSessionState::Closed);
+                    state.sessions.set_state(&session_id, TerminalSessionState::Terminated);
                 }
                 if let TerminalServerMessage::Error { error, .. } = &output {
                     terminal_failed = true;
@@ -259,11 +359,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
                 }
                 if send_split_server_message(&mut sender, output).await.is_err() {
                     state.sessions.detach(&session_id);
-                    schedule_detached_terminal_cleanup(
-                        state.sessions.clone(),
-                        session_id.clone(),
-                        state.terminal_config.disconnect_grace,
-                    );
+                    audit_terminal_detached(&state.audit, &actor_email, &session_id, "browser websocket disconnected");
                     break;
                 }
                 if is_terminal_exit {
@@ -273,19 +369,18 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
             incoming = receiver.next() => {
                 if let Some(Ok(message)) = incoming {
                     state.sessions.touch(&session_id);
-                    if !handle_client_frame(&state.sessions, &session, &session_id, message, &mut sender).await {
-                        schedule_cleanup_if_detached(&state, &session_id);
+                    if !handle_client_frame(&state.sessions, &state.audit, &actor_email, &session, &session_id, message, &mut sender).await {
                         break;
                     }
                 } else {
                     state.sessions.detach(&session_id);
-                    schedule_cleanup_if_detached(&state, &session_id);
+                    audit_terminal_detached(&state.audit, &actor_email, &session_id, "browser websocket disconnected");
                     break;
                 }
             }
             _ = idle_check.tick() => {
                 if state.sessions.is_idle(&session_id, state.terminal_config.idle_timeout) {
-                    state.sessions.set_state(&session_id, TerminalSessionState::Closing);
+                    state.sessions.set_state(&session_id, TerminalSessionState::Terminating);
                     let _ = send_split_server_message(
                         &mut sender,
                         TerminalServerMessage::Error {
@@ -302,7 +397,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
                     .sessions
                     .is_exceeded_max_duration(&session_id, state.terminal_config.max_duration)
                 {
-                    state.sessions.set_state(&session_id, TerminalSessionState::Closing);
+                    state.sessions.set_state(&session_id, TerminalSessionState::Terminating);
                     let _ = send_split_server_message(
                         &mut sender,
                         TerminalServerMessage::Error {
@@ -329,7 +424,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
     }
     state
         .sessions
-        .set_state(&session_id, TerminalSessionState::Closing);
+        .set_state(&session_id, TerminalSessionState::Terminating);
     state.sessions.remove(&session_id);
     let _ = tokio::time::timeout(READ_SHUTDOWN_GRACE, output_reader).await;
 
@@ -343,24 +438,43 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, actor_em
 }
 
 #[allow(clippy::too_many_lines)]
-async fn handle_local_terminal_reattach(
+async fn handle_terminal_reattach(
     socket: WebSocket,
     state: AppState,
-    actor_email: String,
+    user: User,
     session_id: TerminalSessionId,
     reconnect_token: TerminalReconnectToken,
 ) {
-    let Some((session, mut output_rx, size, next_reconnect_token)) =
-        state.sessions.reattach(&session_id, &reconnect_token)
-    else {
+    let actor_email = user.email.clone();
+    if !authorize_session_reattach(&state, &user, &session_id) {
         let mut socket = socket;
         let _ = send_server_message(
             &mut socket,
             TerminalServerMessage::Error {
                 session_id: Some(session_id),
                 error: protocol_error_text(
-                    TerminalErrorCode::SessionNotFound,
-                    "detached terminal session was not found",
+                    TerminalErrorCode::Forbidden,
+                    "terminal reattach is not permitted for this session",
+                ),
+            },
+        )
+        .await;
+        return;
+    }
+
+    let Some(target) = state
+        .sessions
+        .reattach(&session_id, &reconnect_token, &actor_email)
+    else {
+        let mut socket = socket;
+        let error_code = terminal_missing_or_expired_code(&state, &session_id);
+        let _ = send_server_message(
+            &mut socket,
+            TerminalServerMessage::Error {
+                session_id: Some(session_id),
+                error: protocol_error_text(
+                    error_code,
+                    "terminal session was not found or is no longer reattachable",
                 ),
             },
         )
@@ -369,25 +483,47 @@ async fn handle_local_terminal_reattach(
     };
 
     let (mut sender, mut receiver) = socket.split();
-    state
-        .sessions
-        .set_state(&session_id, TerminalSessionState::Reattached);
     let _ = send_split_server_message(
         &mut sender,
         TerminalServerMessage::Reattached {
             session_id: session_id.clone(),
-            node_id: None,
-            size,
-            reconnect_token: Some(next_reconnect_token),
+            node_id: target.node_id.clone().map(NodeId),
+            size: target.size,
+            reconnect_token: Some(target.reconnect_token),
         },
     )
     .await;
+    for replay in target.replay {
+        let _ = send_split_server_message(&mut sender, replay).await;
+    }
     state
         .sessions
         .set_state(&session_id, TerminalSessionState::Active);
+    state.audit.record(AuditEventInput {
+        kind: AuditEventKind::TerminalReattached,
+        actor_email: Some(actor_email.clone()),
+        message: format!("terminal session {} reattached", session_id.0),
+    });
 
     let mut idle_check = tokio::time::interval(IDLE_CHECK_INTERVAL);
     let mut terminal_failed = false;
+    let session = match target.backend {
+        TerminalBackend::Local(session) => session,
+        TerminalBackend::Remote { command_tx } => {
+            handle_remote_attached_socket(
+                sender,
+                receiver,
+                state,
+                actor_email,
+                session_id,
+                target.output_rx,
+                command_tx,
+            )
+            .await;
+            return;
+        }
+    };
+    let mut output_rx = target.output_rx;
 
     loop {
         tokio::select! {
@@ -400,7 +536,7 @@ async fn handle_local_terminal_reattach(
                 state.sessions.touch(&session_id);
                 let is_terminal_exit = matches!(output, TerminalServerMessage::Exited { .. });
                 if is_terminal_exit {
-                    state.sessions.set_state(&session_id, TerminalSessionState::Closed);
+                    state.sessions.set_state(&session_id, TerminalSessionState::Terminated);
                 }
                 if let TerminalServerMessage::Error { error, .. } = &output {
                     terminal_failed = true;
@@ -412,11 +548,7 @@ async fn handle_local_terminal_reattach(
                 }
                 if send_split_server_message(&mut sender, output).await.is_err() {
                     state.sessions.detach(&session_id);
-                    schedule_detached_terminal_cleanup(
-                        state.sessions.clone(),
-                        session_id.clone(),
-                        state.terminal_config.disconnect_grace,
-                    );
+                    audit_terminal_detached(&state.audit, &actor_email, &session_id, "browser websocket disconnected");
                     break;
                 }
                 if is_terminal_exit {
@@ -426,19 +558,18 @@ async fn handle_local_terminal_reattach(
             incoming = receiver.next() => {
                 if let Some(Ok(message)) = incoming {
                     state.sessions.touch(&session_id);
-                    if !handle_client_frame(&state.sessions, &session, &session_id, message, &mut sender).await {
-                        schedule_cleanup_if_detached(&state, &session_id);
+                    if !handle_client_frame(&state.sessions, &state.audit, &actor_email, &session, &session_id, message, &mut sender).await {
                         break;
                     }
                 } else {
                     state.sessions.detach(&session_id);
-                    schedule_cleanup_if_detached(&state, &session_id);
+                    audit_terminal_detached(&state.audit, &actor_email, &session_id, "browser websocket disconnected");
                     break;
                 }
             }
             _ = idle_check.tick() => {
                 if state.sessions.is_idle(&session_id, state.terminal_config.idle_timeout) {
-                    state.sessions.set_state(&session_id, TerminalSessionState::Closing);
+                    state.sessions.set_state(&session_id, TerminalSessionState::Terminating);
                     let _ = send_split_server_message(
                         &mut sender,
                         TerminalServerMessage::Error {
@@ -455,7 +586,7 @@ async fn handle_local_terminal_reattach(
                     .sessions
                     .is_exceeded_max_duration(&session_id, state.terminal_config.max_duration)
                 {
-                    state.sessions.set_state(&session_id, TerminalSessionState::Closing);
+                    state.sessions.set_state(&session_id, TerminalSessionState::Terminating);
                     let _ = send_split_server_message(
                         &mut sender,
                         TerminalServerMessage::Error {
@@ -482,7 +613,7 @@ async fn handle_local_terminal_reattach(
 
     state
         .sessions
-        .set_state(&session_id, TerminalSessionState::Closing);
+        .set_state(&session_id, TerminalSessionState::Terminating);
     state.sessions.remove(&session_id);
 
     if !terminal_failed {
@@ -492,31 +623,6 @@ async fn handle_local_terminal_reattach(
             message: format!("terminal session {} closed", session_id.0),
         });
     }
-}
-
-fn schedule_detached_terminal_cleanup(
-    registry: TerminalSessionRegistry,
-    session_id: TerminalSessionId,
-    grace: Duration,
-) {
-    tokio::spawn(async move {
-        tokio::time::sleep(grace).await;
-        let _ = registry.remove_if_detached(&session_id);
-    });
-}
-
-fn schedule_cleanup_if_detached(state: &AppState, session_id: &TerminalSessionId) {
-    if !matches!(
-        state.sessions.state(session_id),
-        Some(TerminalSessionState::Detached)
-    ) {
-        return;
-    }
-    schedule_detached_terminal_cleanup(
-        state.sessions.clone(),
-        session_id.clone(),
-        state.terminal_config.disconnect_grace,
-    );
 }
 
 pub(crate) fn spawn_session_cleanup_worker(
@@ -529,26 +635,94 @@ pub(crate) fn spawn_session_cleanup_worker(
         interval.tick().await;
         loop {
             interval.tick().await;
-            let expired = sessions.drain_exceeded_max_duration(config.max_duration);
-            for (session_id, actor_email, output_tx, pty_session) in expired {
+            let expired = sessions.drain_expired(config.max_duration, config.idle_timeout);
+            for (session_id, actor_email, output_tx, backend) in expired {
                 let _ = output_tx.send(TerminalServerMessage::Error {
                     session_id: Some(session_id.clone()),
                     error: protocol_error_text(
-                        TerminalErrorCode::TerminalUnavailable,
-                        "terminal session exceeded maximum allowed duration",
+                        TerminalErrorCode::SessionExpired,
+                        "terminal session expired",
                     ),
                 });
-                let _ = pty_session.close();
+                if let TerminalBackend::Remote { command_tx } = backend {
+                    let _ = command_tx
+                        .send(AgentTerminalCommand::CloseTerminal {
+                            session_id: session_id.clone(),
+                        })
+                        .await;
+                }
                 audit.record(AuditEventInput {
                     kind: AuditEventKind::TerminalClosed,
                     actor_email: Some(actor_email),
-                    message: format!(
-                        "terminal session {} forcibly closed: exceeded max duration",
-                        session_id.0
-                    ),
+                    message: format!("terminal session {} expired", session_id.0),
                 });
             }
         }
+    });
+}
+
+fn authorize_session_reattach(
+    state: &AppState,
+    user: &User,
+    session_id: &TerminalSessionId,
+) -> bool {
+    if !state.sessions.owner_matches(session_id, &user.email) {
+        return false;
+    }
+    let Some(node_id) = state.sessions.node_id(session_id) else {
+        return true;
+    };
+    if state
+        .node_enrollment
+        .node_details(&node_id)
+        .is_some_and(|node| matches!(node.status, crate::node::NodeStatus::Revoked))
+    {
+        return false;
+    }
+    state
+        .auth
+        .user_has_node_permission(user, &node_id, Permission::TERMINAL_REATTACH)
+        .unwrap_or(false)
+}
+
+fn authorize_session_terminate(
+    state: &AppState,
+    user: &User,
+    session_id: &TerminalSessionId,
+) -> bool {
+    let Some(node_id) = state.sessions.node_id(session_id) else {
+        return true;
+    };
+    state
+        .auth
+        .user_has_node_permission(user, &node_id, Permission::TERMINAL_CLOSE)
+        .unwrap_or(false)
+}
+
+fn terminal_missing_or_expired_code(
+    state: &AppState,
+    session_id: &TerminalSessionId,
+) -> TerminalErrorCode {
+    if matches!(
+        state.sessions.state(session_id),
+        Some(TerminalSessionState::Expired | TerminalSessionState::Terminated)
+    ) {
+        TerminalErrorCode::SessionExpired
+    } else {
+        TerminalErrorCode::SessionNotFound
+    }
+}
+
+fn audit_terminal_detached(
+    audit: &AuditLog,
+    actor_email: &str,
+    session_id: &TerminalSessionId,
+    reason: &str,
+) {
+    audit.record(AuditEventInput {
+        kind: AuditEventKind::TerminalDetached,
+        actor_email: Some(actor_email.to_owned()),
+        message: format!("terminal session {} detached: {reason}", session_id.0),
     });
 }
 
@@ -737,6 +911,42 @@ async fn handle_remote_terminal_socket(
         return;
     }
 
+    let output_tx = match state.sessions.insert_remote(
+        session_id.clone(),
+        connection.command_tx.clone(),
+        initial_size,
+        state.terminal_config,
+        actor_email.clone(),
+        node_id_text.clone(),
+    ) {
+        Ok(tx) => tx,
+        Err(limit_error) => {
+            let _ = connection
+                .command_tx
+                .send(AgentTerminalCommand::CloseTerminal {
+                    session_id: session_id.clone(),
+                })
+                .await;
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::TerminalFailed,
+                actor_email: Some(actor_email),
+                message: limit_error.message().to_owned(),
+            });
+            let _ = send_server_message(
+                &mut socket,
+                TerminalServerMessage::Error {
+                    session_id: Some(session_id),
+                    error: protocol_error_text(
+                        TerminalErrorCode::TerminalUnavailable,
+                        limit_error.message(),
+                    ),
+                },
+            )
+            .await;
+            return;
+        }
+    };
+
     state.node_router.record_success(&route);
 
     let (mut sender, mut receiver) = socket.split();
@@ -762,9 +972,10 @@ async fn handle_remote_terminal_socket(
                     .await;
                     break;
                 };
-                let message = agent_event_to_browser_message(event, &node_id);
+                let message = agent_event_to_browser_message(event, &node_id, &state.sessions);
                 if matches!(message, TerminalServerMessage::Started { .. }) {
                     terminal_opened = true;
+                    state.sessions.set_state(&session_id, TerminalSessionState::Active);
                     state.audit.record(AuditEventInput {
                         kind: AuditEventKind::TerminalOpened,
                         actor_email: Some(actor_email.clone()),
@@ -775,26 +986,41 @@ async fn handle_remote_terminal_socket(
                     terminal_failed = true;
                 }
                 let is_terminal_exit = matches!(message, TerminalServerMessage::Exited { .. });
+                if !matches!(message, TerminalServerMessage::Output { .. }) {
+                    state.sessions.remember_server_message(message.clone());
+                }
+                let _ = output_tx.send(message.clone());
                 if send_split_server_message(&mut sender, message).await.is_err() {
+                    state.sessions.detach(&session_id);
+                    audit_terminal_detached(&state.audit, &actor_email, &session_id, "browser websocket disconnected");
                     break;
                 }
                 if is_terminal_exit {
+                    state.sessions.remove(&session_id);
                     break;
                 }
             }
             incoming = receiver.next() => {
-                match incoming {
-                    Some(Ok(message)) => {
-                        if !handle_remote_client_frame(&connection.command_tx, &session_id, message, &mut sender).await {
-                            break;
-                        }
+                if let Some(Ok(message)) = incoming {
+                    if !handle_remote_client_frame(&state, &actor_email, &connection.command_tx, &session_id, message, &mut sender).await {
+                        break;
                     }
-                    Some(Err(_)) | None => break,
+                } else {
+                    state.sessions.detach(&session_id);
+                    audit_terminal_detached(&state.audit, &actor_email, &session_id, "browser websocket disconnected");
+                    break;
                 }
             }
         }
     }
 
+    if matches!(
+        state.sessions.state(&session_id),
+        Some(TerminalSessionState::Detached)
+    ) {
+        return;
+    }
+    let _ = state.sessions.terminate(&session_id);
     let _ = connection
         .command_tx
         .send(AgentTerminalCommand::CloseTerminal {
@@ -816,7 +1042,10 @@ async fn handle_remote_terminal_socket(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_remote_client_frame(
+    state: &AppState,
+    actor_email: &str,
     command_tx: &mpsc::Sender<AgentTerminalCommand>,
     active_session_id: &TerminalSessionId,
     message: Message,
@@ -850,10 +1079,22 @@ async fn handle_remote_client_frame(
             }
             AgentTerminalCommand::ResizeTerminal { session_id, size }
         }
-        TerminalClientMessage::Close { session_id } => {
+        TerminalClientMessage::Close { session_id }
+        | TerminalClientMessage::Terminate { session_id } => {
             if !session_id_matches(&session_id, active_session_id, sender).await {
                 return true;
             }
+            state
+                .sessions
+                .set_state(active_session_id, TerminalSessionState::Terminating);
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::TerminalTerminated,
+                actor_email: Some(actor_email.to_owned()),
+                message: format!(
+                    "remote terminal session {} explicitly terminated",
+                    active_session_id.0
+                ),
+            });
             let _ = command_tx
                 .send(AgentTerminalCommand::CloseTerminal { session_id })
                 .await;
@@ -863,6 +1104,13 @@ async fn handle_remote_client_frame(
             if !session_id_matches(&session_id, active_session_id, sender).await {
                 return true;
             }
+            state.sessions.detach(active_session_id);
+            audit_terminal_detached(
+                &state.audit,
+                actor_email,
+                active_session_id,
+                "user detached remote terminal session",
+            );
             let _ =
                 send_split_server_message(sender, TerminalServerMessage::Detached { session_id })
                     .await;
@@ -923,9 +1171,86 @@ async fn handle_remote_client_frame(
     true
 }
 
+#[allow(clippy::too_many_lines)]
+async fn handle_remote_attached_socket(
+    mut sender: futures_util::stream::SplitSink<WebSocket, Message>,
+    mut receiver: futures_util::stream::SplitStream<WebSocket>,
+    state: AppState,
+    actor_email: String,
+    session_id: TerminalSessionId,
+    mut output_rx: broadcast::Receiver<TerminalServerMessage>,
+    command_tx: mpsc::Sender<AgentTerminalCommand>,
+) {
+    remote_attached_loop(
+        &state,
+        &actor_email,
+        &session_id,
+        &command_tx,
+        &mut sender,
+        &mut receiver,
+        &mut output_rx,
+    )
+    .await;
+}
+
+async fn remote_attached_loop(
+    state: &AppState,
+    actor_email: &str,
+    session_id: &TerminalSessionId,
+    command_tx: &mpsc::Sender<AgentTerminalCommand>,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    receiver: &mut futures_util::stream::SplitStream<WebSocket>,
+    output_rx: &mut broadcast::Receiver<TerminalServerMessage>,
+) {
+    loop {
+        tokio::select! {
+            output = output_rx.recv() => {
+                let output = match output {
+                    Ok(output) => output,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                state.sessions.touch(session_id);
+                let is_terminal_exit = matches!(output, TerminalServerMessage::Exited { .. });
+                if send_split_server_message(sender, output).await.is_err() {
+                    state.sessions.detach(session_id);
+                    audit_terminal_detached(&state.audit, actor_email, session_id, "browser websocket disconnected");
+                    break;
+                }
+                if is_terminal_exit {
+                    state.sessions.remove(session_id);
+                    break;
+                }
+            }
+            incoming = receiver.next() => {
+                if let Some(Ok(message)) = incoming {
+                    state.sessions.touch(session_id);
+                    if !handle_remote_client_frame(
+                        state,
+                        actor_email,
+                        command_tx,
+                        session_id,
+                        message,
+                        sender,
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                } else {
+                    state.sessions.detach(session_id);
+                    audit_terminal_detached(&state.audit, actor_email, session_id, "browser websocket disconnected");
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn agent_event_to_browser_message(
     event: AgentTerminalEvent,
     node_id: &NodeId,
+    registry: &TerminalSessionRegistry,
 ) -> TerminalServerMessage {
     match event {
         AgentTerminalEvent::TerminalStarted { session_id, size } => {
@@ -936,9 +1261,13 @@ pub(crate) fn agent_event_to_browser_message(
                 reconnect_token: None,
             }
         }
-        AgentTerminalEvent::TerminalOutput { session_id, data } => {
-            TerminalServerMessage::Output { session_id, data }
-        }
+        AgentTerminalEvent::TerminalOutput { session_id, data } => registry
+            .record_output(&session_id, data.clone())
+            .unwrap_or(TerminalServerMessage::Output {
+                session_id,
+                sequence: 0,
+                data,
+            }),
         AgentTerminalEvent::TerminalExited { session_id, exit } => {
             TerminalServerMessage::Exited { session_id, exit }
         }
@@ -949,8 +1278,11 @@ pub(crate) fn agent_event_to_browser_message(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_client_frame(
     registry: &TerminalSessionRegistry,
+    audit: &AuditLog,
+    actor_email: &str,
     session: &LocalPtySession,
     active_session_id: &TerminalSessionId,
     message: Message,
@@ -1005,11 +1337,20 @@ async fn handle_client_frame(
             }
             true
         }
-        TerminalClientMessage::Close { session_id } => {
+        TerminalClientMessage::Close { session_id }
+        | TerminalClientMessage::Terminate { session_id } => {
             if !session_id_matches(&session_id, active_session_id, sender).await {
                 return true;
             }
-            registry.set_state(active_session_id, TerminalSessionState::Closing);
+            registry.set_state(active_session_id, TerminalSessionState::Terminating);
+            audit.record(AuditEventInput {
+                kind: AuditEventKind::TerminalTerminated,
+                actor_email: Some(actor_email.to_owned()),
+                message: format!(
+                    "terminal session {} explicitly terminated",
+                    active_session_id.0
+                ),
+            });
             let _ = session.close();
             let _ = send_split_server_message(
                 sender,
@@ -1025,6 +1366,12 @@ async fn handle_client_frame(
             if !session_id_matches(&session_id, active_session_id, sender).await {
                 return true;
             }
+            audit_terminal_detached(
+                audit,
+                actor_email,
+                active_session_id,
+                "user detached terminal session",
+            );
             detach_local_terminal(registry, active_session_id, sender).await
         }
         TerminalClientMessage::Reattach { session_id, .. } => {
@@ -1075,8 +1422,8 @@ async fn reattach_local_terminal(
     active_session_id: &TerminalSessionId,
     sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
 ) -> bool {
-    registry.set_state(active_session_id, TerminalSessionState::Reconnecting);
-    registry.set_state(active_session_id, TerminalSessionState::Reattached);
+    registry.set_state(active_session_id, TerminalSessionState::Reattaching);
+    registry.set_state(active_session_id, TerminalSessionState::Active);
     let _ = send_split_server_message(
         sender,
         TerminalServerMessage::Reattached {
@@ -1117,6 +1464,7 @@ async fn session_id_matches(
 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn read_pty_output(
+    registry: TerminalSessionRegistry,
     session: Arc<LocalPtySession>,
     session_id: TerminalSessionId,
     output_tx: broadcast::Sender<TerminalServerMessage>,
@@ -1138,10 +1486,9 @@ pub(crate) fn read_pty_output(
                 // this blocking send slows PTY reads when the WebSocket writer
                 // cannot keep up, instead of buffering terminal output without
                 // limit.
-                let _ = output_tx.send(TerminalServerMessage::Output {
-                    session_id: session_id.clone(),
-                    data,
-                });
+                if let Some(message) = registry.record_output(&session_id, data) {
+                    let _ = output_tx.send(message);
+                }
             }
             Err(error) => {
                 if let Ok(Some(exit)) = session.try_wait_exit() {

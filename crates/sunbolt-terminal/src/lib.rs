@@ -17,11 +17,11 @@ pub enum TerminalSessionState {
     Starting,
     Active,
     Detached,
-    Reconnecting,
-    Reattached,
-    Closing,
-    Closed,
+    Reattaching,
+    Terminating,
+    Terminated,
     Failed,
+    Expired,
 }
 
 impl TerminalSessionState {
@@ -32,22 +32,47 @@ impl TerminalSessionState {
             (self, next),
             (Self::Created, Self::Starting)
                 | (Self::Starting, Self::Active | Self::Failed)
-                | (Self::Active, Self::Detached | Self::Closing | Self::Failed)
+                | (
+                    Self::Active,
+                    Self::Detached | Self::Terminating | Self::Failed | Self::Expired
+                )
                 | (
                     Self::Detached,
-                    Self::Reconnecting | Self::Closing | Self::Failed
+                    Self::Reattaching | Self::Terminating | Self::Failed | Self::Expired
                 )
                 | (
-                    Self::Reconnecting,
-                    Self::Reattached | Self::Closing | Self::Failed
+                    Self::Reattaching,
+                    Self::Active | Self::Terminating | Self::Failed
                 )
                 | (
-                    Self::Reattached,
-                    Self::Active | Self::Closing | Self::Failed
+                    Self::Terminating | Self::Failed | Self::Expired,
+                    Self::Terminated
                 )
-                | (Self::Closing | Self::Failed, Self::Closed)
         )
     }
+
+    /// Returns true when a session can be reattached by an authorized browser.
+    #[must_use]
+    pub const fn is_reattachable(self) -> bool {
+        matches!(self, Self::Active | Self::Detached | Self::Reattaching)
+    }
+
+    /// Returns true when the PTY or remote process is no longer expected to run.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Terminated | Self::Failed | Self::Expired)
+    }
+}
+
+/// Reason a terminal session stopped running.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TerminalCloseReason {
+    ExplicitTerminate,
+    PtyProcessExit,
+    BackendPolicy,
+    NodeRevoked,
+    AgentDisconnected,
+    Expired,
 }
 
 /// Exit status for a local terminal child process.
@@ -343,21 +368,20 @@ mod tests {
     fn terminal_session_state_transitions_are_explicit() {
         assert!(TerminalSessionState::Created.can_transition_to(TerminalSessionState::Starting));
         assert!(TerminalSessionState::Starting.can_transition_to(TerminalSessionState::Active));
-        assert!(TerminalSessionState::Active.can_transition_to(TerminalSessionState::Closing));
+        assert!(TerminalSessionState::Active.can_transition_to(TerminalSessionState::Terminating));
         assert!(TerminalSessionState::Active.can_transition_to(TerminalSessionState::Detached));
+        assert!(TerminalSessionState::Detached.can_transition_to(TerminalSessionState::Reattaching));
+        assert!(TerminalSessionState::Reattaching.can_transition_to(TerminalSessionState::Active));
         assert!(
-            TerminalSessionState::Detached.can_transition_to(TerminalSessionState::Reconnecting)
+            TerminalSessionState::Terminating.can_transition_to(TerminalSessionState::Terminated)
         );
-        assert!(
-            TerminalSessionState::Reconnecting.can_transition_to(TerminalSessionState::Reattached)
-        );
-        assert!(TerminalSessionState::Reattached.can_transition_to(TerminalSessionState::Active));
-        assert!(TerminalSessionState::Closing.can_transition_to(TerminalSessionState::Closed));
         assert!(TerminalSessionState::Active.can_transition_to(TerminalSessionState::Failed));
-        assert!(TerminalSessionState::Failed.can_transition_to(TerminalSessionState::Closed));
+        assert!(TerminalSessionState::Failed.can_transition_to(TerminalSessionState::Terminated));
+        assert!(TerminalSessionState::Detached.can_transition_to(TerminalSessionState::Expired));
+        assert!(TerminalSessionState::Expired.can_transition_to(TerminalSessionState::Terminated));
 
         assert!(!TerminalSessionState::Created.can_transition_to(TerminalSessionState::Active));
-        assert!(!TerminalSessionState::Closed.can_transition_to(TerminalSessionState::Active));
+        assert!(!TerminalSessionState::Terminated.can_transition_to(TerminalSessionState::Active));
         assert!(!TerminalSessionState::Detached.can_transition_to(TerminalSessionState::Active));
     }
 

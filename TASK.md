@@ -157,65 +157,65 @@ Goal: make terminal sessions durable across browser navigation and usable throug
 
 ## Terminal Lifecycle Semantics
 
-- [ ] Define explicit terminal lifecycle states for production.
-- [ ] Distinguish UI tab close from PTY termination.
-- [ ] Distinguish browser WebSocket disconnect from PTY termination.
-- [ ] Distinguish detach from terminate.
-- [ ] Distinguish PTY process exit from backend policy close.
-- [ ] Add audit events for terminal detach.
-- [ ] Add audit events for terminal reattach.
-- [ ] Add audit events for explicit terminal terminate.
+- [x] Define explicit terminal lifecycle states for production.
+- [x] Distinguish UI tab close from PTY termination.
+- [x] Distinguish browser WebSocket disconnect from PTY termination.
+- [x] Distinguish detach from terminate.
+- [x] Distinguish PTY process exit from backend policy close.
+- [x] Add audit events for terminal detach.
+- [x] Add audit events for terminal reattach.
+- [x] Add audit events for explicit terminal terminate.
 
 ## Backend APIs and Protocol
 
-- [ ] Add API to list active terminal sessions for the authenticated user.
-- [ ] Add API to list detached terminal sessions for the authenticated user.
-- [ ] Add API or protocol command to explicitly terminate a terminal session.
-- [ ] Ensure reattach verifies authenticated user identity.
-- [ ] Ensure reattach verifies workspace membership and terminal permission.
-- [ ] Ensure reattach rejects revoked nodes.
-- [ ] Add terminal output sequence numbers.
-- [ ] Add a short replay buffer for recent terminal output where practical.
-- [ ] Add clear expired-session errors.
+- [x] Add API to list active terminal sessions for the authenticated user.
+- [x] Add API to list detached terminal sessions for the authenticated user.
+- [x] Add API or protocol command to explicitly terminate a terminal session.
+- [x] Ensure reattach verifies authenticated user identity.
+- [x] Ensure reattach verifies workspace membership and terminal permission.
+- [x] Ensure reattach rejects revoked nodes.
+- [x] Add terminal output sequence numbers.
+- [x] Add a short replay buffer for recent terminal output where practical.
+- [x] Add clear expired-session errors.
 
 ## Local Terminal Reattach
 
-- [ ] Keep local PTY alive when browser route changes.
-- [ ] Reattach local terminal by session identity after route changes.
-- [ ] Reattach local terminal after short WebSocket disconnect.
-- [ ] Ensure idle timeout still applies to detached sessions.
-- [ ] Ensure absolute max duration still applies to detached sessions.
+- [x] Keep local PTY alive when browser route changes.
+- [x] Reattach local terminal by session identity after route changes.
+- [x] Reattach local terminal after short WebSocket disconnect.
+- [x] Ensure idle timeout still applies to detached sessions.
+- [x] Ensure absolute max duration still applies to detached sessions.
 
 ## Remote Terminal Reattach
 
-- [ ] Keep remote agent PTY alive when browser route changes.
-- [ ] Reattach remote terminal through control plane after route changes.
-- [ ] Reattach remote terminal after short browser disconnect.
-- [ ] Handle agent disconnect during detached terminal state.
-- [ ] Handle agent reconnect and terminal resume where supported.
-- [ ] Return clear error when remote terminal cannot be recovered.
+- [x] Keep remote agent PTY alive when browser route changes.
+- [x] Reattach remote terminal through control plane after route changes.
+- [x] Reattach remote terminal after short browser disconnect.
+- [x] Handle agent disconnect during detached terminal state.
+- [x] Handle agent reconnect and terminal resume where supported.
+- [x] Return clear error when remote terminal cannot be recovered.
 
 ## Multi-Tab UI
 
-- [ ] Add terminal workspace tab model.
-- [ ] Add open new terminal action.
-- [ ] Add switch terminal tab action.
-- [ ] Add close UI tab action that does not kill PTY by default.
-- [ ] Add explicit terminate terminal action.
-- [ ] Add detached session list.
-- [ ] Add reattach session action.
-- [ ] Preserve active session identity across route changes.
-- [ ] Restore session list after browser reload.
+- [x] Add terminal workspace tab model.
+- [x] Add open new terminal action.
+- [x] Add switch terminal tab action.
+- [x] Add close UI tab action that does not kill PTY by default.
+- [x] Add explicit terminate terminal action.
+- [x] Add detached session list.
+- [x] Add reattach session action.
+- [x] Preserve active session identity across route changes.
+- [x] Restore session list after browser reload.
 
 ## Tests
 
-- [ ] Test browser detach does not close PTY.
-- [ ] Test explicit terminate closes PTY.
-- [ ] Test reattach succeeds for authorized owner.
-- [ ] Test reattach fails for unauthorized user.
-- [ ] Test reattach fails for revoked node.
-- [ ] Test multiple sessions per user follow configured limits.
-- [ ] Test close UI tab and terminate session have different effects.
+- [x] Test browser detach does not close PTY.
+- [x] Test explicit terminate closes PTY.
+- [x] Test reattach succeeds for authorized owner.
+- [x] Test reattach fails for unauthorized user.
+- [x] Test reattach fails for revoked node.
+- [x] Test multiple sessions per user follow configured limits.
+- [x] Test close UI tab and terminate session have different effects.
 
 ---
 

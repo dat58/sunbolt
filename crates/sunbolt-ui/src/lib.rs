@@ -7,6 +7,9 @@ pub const TERMINAL_NODE_INPUT_ID: &str = "sunbolt-terminal-node";
 
 /// WebSocket endpoint used by the terminal UI.
 pub const TERMINAL_WS_ENDPOINT: &str = "/terminal/ws";
+pub const TERMINAL_ACTIVE_SESSIONS_ENDPOINT: &str = "/terminal/sessions/active";
+pub const TERMINAL_DETACHED_SESSIONS_ENDPOINT: &str = "/terminal/sessions/detached";
+pub const TERMINAL_SESSION_TERMINATE_PREFIX: &str = "/terminal/sessions";
 pub const AUTH_LOGIN_ENDPOINT: &str = "/auth/login";
 pub const AUTH_ME_ENDPOINT: &str = "/auth/me";
 pub const AUTH_TERMINAL_ACCESS_ENDPOINT: &str = "/auth/terminal-access";
@@ -163,6 +166,10 @@ pub fn App() -> Element {
                 rel: "stylesheet",
                 href: asset!("/assets/sunbolt.css")
             }
+            link {
+                rel: "stylesheet",
+                href: asset!("/assets/sunbolt-terminal-workspace.css")
+            }
             if let Some(browser_config) = control_plane_config_script() {
                 script {
                     dangerous_inner_html: browser_config
@@ -232,6 +239,21 @@ pub fn TerminalPageBody() -> Element {
                         "Step-up MFA"
                     }
                     button {
+                        id: "sunbolt-terminal-new",
+                        class: ACTION_BUTTON_CLASS,
+                        "New"
+                    }
+                    button {
+                        id: "sunbolt-terminal-detach",
+                        class: ACTION_BUTTON_CLASS,
+                        "Detach"
+                    }
+                    button {
+                        id: "sunbolt-terminal-close-tab",
+                        class: ACTION_BUTTON_CLASS,
+                        "Close Tab"
+                    }
+                    button {
                         id: "sunbolt-terminal-reconnect",
                         class: ACTION_BUTTON_CLASS,
                         disabled: true,
@@ -245,9 +267,18 @@ pub fn TerminalPageBody() -> Element {
                     button {
                         id: "sunbolt-terminal-close",
                         class: DANGER_BUTTON_CLASS,
-                        "Close"
+                        "Terminate"
                     }
                 }
+            }
+            div {
+                id: "sunbolt-terminal-tabs",
+                class: "sunbolt-terminal-tabs",
+                role: "tablist"
+            }
+            div {
+                id: "sunbolt-terminal-detached-sessions",
+                class: "sunbolt-detached-sessions"
             }
             div {
                 id: "sunbolt-terminal-error",
@@ -628,10 +659,15 @@ pub fn terminal_bridge_script() -> String {
   const passwordInput = document.getElementById("sunbolt-terminal-password");
   const loginButton = document.getElementById("sunbolt-terminal-login");
   const closeButton = document.getElementById("sunbolt-terminal-close");
+  const newButton = document.getElementById("sunbolt-terminal-new");
+  const detachButton = document.getElementById("sunbolt-terminal-detach");
+  const closeTabButton = document.getElementById("sunbolt-terminal-close-tab");
   const mfaButton = document.getElementById("sunbolt-terminal-mfa");
   const reconnectButton = document.getElementById("sunbolt-terminal-reconnect");
   const retryButton = document.getElementById("sunbolt-terminal-retry");
   const nodeInput = document.getElementById("{node_input_id}");
+  const tabList = document.getElementById("sunbolt-terminal-tabs");
+  const detachedList = document.getElementById("sunbolt-terminal-detached-sessions");
   if (!mount || mount.dataset.sunboltTerminalReady === "true") {{
     return;
   }}
@@ -651,6 +687,8 @@ pub fn terminal_bridge_script() -> String {
   let authenticated = false;
   let loginBusy = false;
   let currentStatusState = "idle";
+  const workspaceStorageKey = "sunbolt.terminal.workspace.v1";
+  const activeSessions = new Map();
 
   const terminalData = (data) => {{
     if (typeof data !== "string") {{
@@ -731,6 +769,14 @@ pub fn terminal_bridge_script() -> String {
         || currentStatusState === "closed"
         || currentStatusState === "disconnected";
     }}
+    for (const button of [detachButton, closeTabButton]) {{
+      if (button) {{
+        button.disabled = !authenticated || !sessionId || currentStatusState === "idle";
+      }}
+    }}
+    if (newButton) {{
+      newButton.disabled = !authenticated || loginBusy || currentStatusState === "connecting";
+    }}
     if (reconnectButton) {{
       reconnectButton.disabled = !(
         currentStatusState === "disconnected" && sessionId && reconnectToken
@@ -802,6 +848,111 @@ pub fn terminal_bridge_script() -> String {
     }}
   }};
 
+  const terminalLabel = (record) => {{
+    if (!record) {{
+      return "Terminal";
+    }}
+    const node = record.node_id || "local";
+    return `${{node}}:${{String(record.session_id || "").slice(-6)}}`;
+  }};
+
+  const persistWorkspace = () => {{
+    const payload = {{
+      active_session_id: sessionId,
+      sessions: Array.from(activeSessions.values())
+    }};
+    try {{
+      window.sessionStorage.setItem(workspaceStorageKey, JSON.stringify(payload));
+    }} catch (_error) {{}}
+  }};
+
+  const loadWorkspace = () => {{
+    try {{
+      const payload = JSON.parse(window.sessionStorage.getItem(workspaceStorageKey) || "{{}}");
+      for (const record of payload.sessions || []) {{
+        if (record && record.session_id) {{
+          activeSessions.set(record.session_id, record);
+        }}
+      }}
+      return payload && payload.active_session_id ? payload.active_session_id : null;
+    }} catch (_error) {{
+      return null;
+    }}
+  }};
+
+  const rememberSession = (message, state = "active") => {{
+    if (!message || !message.session_id) {{
+      return;
+    }}
+    activeSessions.set(message.session_id, {{
+      session_id: message.session_id,
+      node_id: message.node_id || null,
+      reconnect_token: message.reconnect_token || reconnectToken,
+      state
+    }});
+    persistWorkspace();
+    renderTabs();
+  }};
+
+  const removeSession = (id) => {{
+    if (!id) {{
+      return;
+    }}
+    activeSessions.delete(id);
+    if (sessionId === id) {{
+      sessionId = null;
+      reconnectToken = null;
+    }}
+    persistWorkspace();
+    renderTabs();
+  }};
+
+  const renderTabs = () => {{
+    if (!tabList) {{
+      return;
+    }}
+    tabList.innerHTML = "";
+    for (const record of activeSessions.values()) {{
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = record.session_id === sessionId
+        ? "sunbolt-tab sunbolt-tab-active"
+        : "sunbolt-tab";
+      button.textContent = terminalLabel(record);
+      button.addEventListener("click", () => {{
+        sessionId = record.session_id;
+        reconnectToken = record.reconnect_token || null;
+        setStatus("Reconnecting", "connecting");
+        connect(true);
+      }});
+      tabList.append(button);
+    }}
+  }};
+
+  const renderDetachedSessions = (sessions) => {{
+    if (!detachedList) {{
+      return;
+    }}
+    detachedList.innerHTML = "";
+    for (const record of sessions || []) {{
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "sunbolt-detached-session";
+      row.textContent = `${{terminalLabel(record)}} detached`;
+      row.addEventListener("click", () => {{
+        const stored = activeSessions.get(record.session_id);
+        sessionId = record.session_id;
+        reconnectToken = stored && stored.reconnect_token ? stored.reconnect_token : reconnectToken;
+        if (!reconnectToken) {{
+          setError("This detached session requires a reconnect token from the active browser workspace.");
+          return;
+        }}
+        connect(true);
+      }});
+      detachedList.append(row);
+    }}
+  }};
+
   const send = (message) => {{
     if (socket && socket.readyState === WebSocket.OPEN) {{
       socket.send(JSON.stringify(message));
@@ -855,6 +1006,31 @@ pub fn terminal_bridge_script() -> String {
     return fallbackMessage;
   }};
 
+  const refreshSessionLists = async () => {{
+    if (!authenticated) {{
+      return;
+    }}
+    try {{
+      const [activeResponse, detachedResponse] = await Promise.all([
+        fetch(httpEndpointUrl("{terminal_active_sessions_endpoint}"), {{ credentials: "include" }}),
+        fetch(httpEndpointUrl("{terminal_detached_sessions_endpoint}"), {{ credentials: "include" }})
+      ]);
+      if (activeResponse.ok) {{
+        const payload = await activeResponse.json();
+        for (const record of payload.sessions || []) {{
+          const existing = activeSessions.get(record.session_id) || {{}};
+          activeSessions.set(record.session_id, {{ ...existing, ...record }});
+        }}
+      }}
+      if (detachedResponse.ok) {{
+        const payload = await detachedResponse.json();
+        renderDetachedSessions(payload.sessions || []);
+      }}
+      persistWorkspace();
+      renderTabs();
+    }} catch (_error) {{}}
+  }};
+
   const ensureTerminalAccess = async () => {{
     const response = await fetch(httpEndpointUrl("{auth_terminal_access_endpoint}"), {{
       credentials: "include"
@@ -890,6 +1066,7 @@ pub fn terminal_bridge_script() -> String {
         authenticated = true;
         setAuthVisible(false);
         setStatus("Idle", "idle");
+        refreshSessionLists();
         return true;
       }}
       authenticated = false;
@@ -958,13 +1135,20 @@ pub fn terminal_bridge_script() -> String {
       if (message.type === "started") {{
         sessionId = message.session_id;
         reconnectToken = message.reconnect_token || null;
+        rememberSession(message, "active");
         setStatus("Active", "connected");
       }} else if (message.type === "reattached") {{
         sessionId = message.session_id;
         reconnectToken = message.reconnect_token || reconnectToken;
+        rememberSession(message, "active");
         setStatus("Active", "connected");
       }} else if (message.type === "detached") {{
-        setStatus("Closed", "closed");
+        const stored = activeSessions.get(message.session_id) || {{ session_id: message.session_id }};
+        activeSessions.set(message.session_id, {{ ...stored, state: "detached", reconnect_token: reconnectToken }});
+        persistWorkspace();
+        renderTabs();
+        refreshSessionLists();
+        setStatus("Detached", "disconnected");
       }} else if (message.type === "output") {{
         writeOutput(message.data);
       }} else if (message.type === "error") {{
@@ -975,6 +1159,7 @@ pub fn terminal_bridge_script() -> String {
         setError(errorMessage);
         writeOutput(`\r\n${{errorMessage}}\r\n`);
       }} else if (message.type === "exited") {{
+        removeSession(message.session_id);
         setStatus("Closed", "closed");
       }}
     }});
@@ -1042,13 +1227,51 @@ pub fn terminal_bridge_script() -> String {
 
   const closeTerminal = () => {{
     if (sessionId) {{
-      send({{ type: "close", session_id: sessionId }});
+      send({{ type: "terminate", session_id: sessionId }});
+      fetch(httpEndpointUrl(`{terminal_session_terminate_prefix}/${{sessionId}}/terminate`), {{
+        method: "POST",
+        credentials: "include"
+      }}).catch(() => {{}});
     }}
+    removeSession(sessionId);
     reconnectToken = null;
     if (socket) {{
       socket.close();
     }}
     setStatus("Closed", "closed");
+  }};
+
+  const detachTerminal = () => {{
+    if (!sessionId) {{
+      return;
+    }}
+    send({{ type: "detach", session_id: sessionId }});
+    const stored = activeSessions.get(sessionId) || {{ session_id: sessionId }};
+    activeSessions.set(sessionId, {{ ...stored, state: "detached", reconnect_token: reconnectToken }});
+    persistWorkspace();
+    renderTabs();
+    if (socket) {{
+      socket.close();
+    }}
+    setStatus("Detached", "disconnected");
+  }};
+
+  const closeUiTab = () => {{
+    const closedSessionId = sessionId;
+    detachTerminal();
+    removeSession(closedSessionId);
+  }};
+
+  const openNewTerminal = () => {{
+    if (socket) {{
+      socket.close();
+    }}
+    sessionId = null;
+    reconnectToken = null;
+    if (terminal) {{
+      terminal.clear();
+    }}
+    connect(false);
   }};
 
   const cleanupTerminal = () => {{
@@ -1059,7 +1282,7 @@ pub fn terminal_bridge_script() -> String {
     if (sessionId && reconnectToken) {{
       send({{ type: "detach", session_id: sessionId }});
     }} else if (sessionId) {{
-      send({{ type: "close", session_id: sessionId }});
+      send({{ type: "detach", session_id: sessionId }});
     }}
     if (socket) {{
       socket.close();
@@ -1175,6 +1398,15 @@ pub fn terminal_bridge_script() -> String {
   if (closeButton) {{
     closeButton.addEventListener("click", closeTerminal);
   }}
+  if (newButton) {{
+    newButton.addEventListener("click", openNewTerminal);
+  }}
+  if (detachButton) {{
+    detachButton.addEventListener("click", detachTerminal);
+  }}
+  if (closeTabButton) {{
+    closeTabButton.addEventListener("click", closeUiTab);
+  }}
   if (mfaButton) {{
     mfaButton.addEventListener("click", completeStepUpMfa);
   }}
@@ -1210,7 +1442,20 @@ pub fn terminal_bridge_script() -> String {
   window.addEventListener("pagehide", cleanupTerminal);
   setStatus("Idle", "idle");
   setAuthVisible(false);
-  connect();
+  const storedSessionId = loadWorkspace();
+  renderTabs();
+  if (storedSessionId && activeSessions.has(storedSessionId)) {{
+    const stored = activeSessions.get(storedSessionId);
+    sessionId = stored.session_id;
+    reconnectToken = stored.reconnect_token || null;
+    if (reconnectToken) {{
+      connect(true);
+    }} else {{
+      connect();
+    }}
+  }} else {{
+    connect();
+  }}
 }})();
 "##,
         mount_id = TERMINAL_MOUNT_ID,
@@ -1219,6 +1464,9 @@ pub fn terminal_bridge_script() -> String {
         auth_login_endpoint = AUTH_LOGIN_ENDPOINT,
         auth_me_endpoint = AUTH_ME_ENDPOINT,
         auth_terminal_access_endpoint = AUTH_TERMINAL_ACCESS_ENDPOINT,
+        terminal_active_sessions_endpoint = TERMINAL_ACTIVE_SESSIONS_ENDPOINT,
+        terminal_detached_sessions_endpoint = TERMINAL_DETACHED_SESSIONS_ENDPOINT,
+        terminal_session_terminate_prefix = TERMINAL_SESSION_TERMINATE_PREFIX,
         step_up_mfa_endpoint = STEP_UP_MFA_ENDPOINT,
         control_plane_config_global = CONTROL_PLANE_URL_CONFIG_GLOBAL,
         ws_config_global = TERMINAL_WS_CONFIG_GLOBAL,
@@ -1240,8 +1488,10 @@ mod tests {
     use super::{
         app_title, browser_config_script, terminal_bridge_script, AUTH_LOGIN_ENDPOINT,
         AUTH_ME_ENDPOINT, AUTH_TERMINAL_ACCESS_ENDPOINT, CONTROL_PLANE_URL_CONFIG_GLOBAL,
-        STEP_UP_MFA_ENDPOINT, TERMINAL_MOUNT_ID, TERMINAL_NODE_INPUT_ID, TERMINAL_WS_CONFIG_GLOBAL,
-        TERMINAL_WS_ENDPOINT, XTERM_SCRIPT_URL, XTERM_STYLESHEET_URL,
+        STEP_UP_MFA_ENDPOINT, TERMINAL_ACTIVE_SESSIONS_ENDPOINT,
+        TERMINAL_DETACHED_SESSIONS_ENDPOINT, TERMINAL_MOUNT_ID, TERMINAL_NODE_INPUT_ID,
+        TERMINAL_SESSION_TERMINATE_PREFIX, TERMINAL_WS_CONFIG_GLOBAL, TERMINAL_WS_ENDPOINT,
+        XTERM_SCRIPT_URL, XTERM_STYLESHEET_URL,
     };
 
     #[test]
@@ -1272,14 +1522,20 @@ mod tests {
         assert!(script.contains(AUTH_LOGIN_ENDPOINT));
         assert!(script.contains(AUTH_ME_ENDPOINT));
         assert!(script.contains(AUTH_TERMINAL_ACCESS_ENDPOINT));
+        assert!(script.contains(TERMINAL_ACTIVE_SESSIONS_ENDPOINT));
+        assert!(script.contains(TERMINAL_DETACHED_SESSIONS_ENDPOINT));
+        assert!(script.contains(TERMINAL_SESSION_TERMINATE_PREFIX));
         assert!(script.contains(STEP_UP_MFA_ENDPOINT));
         assert!(script.contains(TERMINAL_MOUNT_ID));
         assert!(script.contains(TERMINAL_NODE_INPUT_ID));
         assert!(script.contains(r#"type: "start""#));
         assert!(script.contains(r#"type: "input""#));
         assert!(script.contains(r#"type: "resize""#));
-        assert!(script.contains(r#"type: "close""#));
+        assert!(script.contains(r#"type: "terminate""#));
+        assert!(script.contains(r#"type: "detach""#));
         assert!(script.contains("sunbolt-terminal-close"));
+        assert!(script.contains("sunbolt-terminal-close-tab"));
+        assert!(script.contains("sunbolt-terminal-tabs"));
         assert!(script.contains("sunbolt-terminal-mfa"));
         assert!(script.contains("sunbolt-terminal-reconnect"));
         assert!(script.contains("border-lightning-cyan"));
@@ -1369,7 +1625,7 @@ mod tests {
         assert!(script.contains("new MutationObserver"));
         assert!(script.contains("cleanupTerminal"));
         assert!(script.contains(r#"type: "detach""#));
-        assert!(script.contains(r#"type: "close""#));
+        assert!(script.contains(r#"type: "terminate""#));
         assert!(script.contains("pagehide"));
         assert!(script.contains("beforeunload"));
     }

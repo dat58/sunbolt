@@ -17,7 +17,7 @@ use crate::{
     node::NodeView,
     security,
     state::AppState,
-    terminal::protocol_error_text,
+    terminal::{protocol_error_text, TerminalBackend},
 };
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +74,7 @@ pub(crate) async fn revoke_node(
     match state.node_enrollment.revoke_node(&node_id) {
         Ok(node) => {
             let closed = state.sessions.close_sessions_for_node(&node_id);
-            for (session_id, actor_email_session, output_tx, pty_session) in closed {
+            for (session_id, actor_email_session, output_tx, backend) in closed {
                 let _ = output_tx.send(TerminalServerMessage::Error {
                     session_id: Some(session_id.clone()),
                     error: protocol_error_text(
@@ -82,7 +82,13 @@ pub(crate) async fn revoke_node(
                         "node revoked",
                     ),
                 });
-                let _ = pty_session.close();
+                if let TerminalBackend::Remote { command_tx } = backend {
+                    let _ = command_tx
+                        .send(sunbolt_protocol::AgentTerminalCommand::CloseTerminal {
+                            session_id: session_id.clone(),
+                        })
+                        .await;
+                }
                 audit::record_terminal_closed(
                     &state.audit,
                     actor_email_session,

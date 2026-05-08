@@ -1,0 +1,38 @@
+.sunbolt-terminal-tabs {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding: 0.25rem 0;
+}
+
+.sunbolt-tab,
+.sunbolt-detached-session {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  border: 1px solid #27272a;
+  border-radius: 0.5rem;
+  background: rgb(9 9 11 / 75%);
+  padding: 0.35rem 0.65rem;
+  color: #a1a1aa;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sunbolt-tab-active {
+  border-color: rgb(34 211 238 / 75%);
+  background: rgb(34 211 238 / 12%);
+  color: #22d3ee;
+}
+
+.sunbolt-detached-sessions {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+}
+
+.sunbolt-detached-session {
+  border-color: rgb(251 191 36 / 45%);
+  color: #fbbf24;
+}

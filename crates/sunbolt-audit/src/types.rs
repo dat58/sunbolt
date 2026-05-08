@@ -9,6 +9,9 @@ pub enum AuditEventKind {
     UserMfaChallenge,
     UserMfaSuccess,
     TerminalOpened,
+    TerminalDetached,
+    TerminalReattached,
+    TerminalTerminated,
     TerminalClosed,
     TerminalFailed,
     NodeEnrolled,
@@ -26,6 +29,9 @@ impl AuditEventKind {
             Self::UserMfaChallenge => "user.mfa.challenge",
             Self::UserMfaSuccess => "user.mfa.success",
             Self::TerminalOpened => "terminal.opened",
+            Self::TerminalDetached => "terminal.detached",
+            Self::TerminalReattached => "terminal.reattached",
+            Self::TerminalTerminated => "terminal.terminated",
             Self::TerminalClosed => "terminal.closed",
             Self::TerminalFailed => "terminal.failed",
             Self::NodeEnrolled => "node.enrolled",
@@ -44,6 +50,9 @@ impl AuditEventKind {
                 | Self::UserMfaChallenge
                 | Self::UserMfaSuccess
                 | Self::TerminalOpened
+                | Self::TerminalDetached
+                | Self::TerminalReattached
+                | Self::TerminalTerminated
                 | Self::TerminalClosed
                 | Self::TerminalFailed
         )
@@ -94,6 +103,18 @@ mod tests {
         );
         assert_eq!(AuditEventKind::UserMfaSuccess.as_str(), "user.mfa.success");
         assert_eq!(AuditEventKind::TerminalOpened.as_str(), "terminal.opened");
+        assert_eq!(
+            AuditEventKind::TerminalDetached.as_str(),
+            "terminal.detached"
+        );
+        assert_eq!(
+            AuditEventKind::TerminalReattached.as_str(),
+            "terminal.reattached"
+        );
+        assert_eq!(
+            AuditEventKind::TerminalTerminated.as_str(),
+            "terminal.terminated"
+        );
         assert_eq!(AuditEventKind::TerminalClosed.as_str(), "terminal.closed");
         assert_eq!(AuditEventKind::TerminalFailed.as_str(), "terminal.failed");
         assert_eq!(AuditEventKind::NodeEnrolled.as_str(), "node.enrolled");
@@ -104,6 +125,9 @@ mod tests {
     fn access_history_kinds_are_user_and_terminal_events() {
         assert!(AuditEventKind::UserLoginSuccess.is_access_history());
         assert!(AuditEventKind::TerminalOpened.is_access_history());
+        assert!(AuditEventKind::TerminalDetached.is_access_history());
+        assert!(AuditEventKind::TerminalReattached.is_access_history());
+        assert!(AuditEventKind::TerminalTerminated.is_access_history());
         assert!(AuditEventKind::TerminalClosed.is_access_history());
         assert!(!AuditEventKind::NodeEnrolled.is_access_history());
         assert!(!AuditEventKind::NodeRevoked.is_access_history());

@@ -17,7 +17,8 @@ pub use error::StartupError;
 pub use routes::{
     router, try_router, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH,
     AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
-    AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH, TERMINAL_WS_PATH,
+    AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH,
+    TERMINAL_SESSIONS_ACTIVE_PATH, TERMINAL_SESSIONS_DETACHED_PATH, TERMINAL_WS_PATH,
 };
 
 /// Returns a stable name for the control plane component.
@@ -153,11 +154,14 @@ mod tests {
         assert!(registry
             .reattach(
                 &session_id,
-                &TerminalReconnectToken("wrong-token".to_owned())
+                &TerminalReconnectToken("wrong-token".to_owned()),
+                "test@example.com"
             )
             .is_none());
-        assert!(registry.reattach(&session_id, &reconnect_token).is_some());
-        registry.set_state(&session_id, TerminalSessionState::Reattached);
+        assert!(registry
+            .reattach(&session_id, &reconnect_token, "test@example.com")
+            .is_some());
+        registry.set_state(&session_id, TerminalSessionState::Active);
         registry.set_state(&session_id, TerminalSessionState::Active);
         assert_eq!(
             registry.state(&session_id),
@@ -346,7 +350,7 @@ mod tests {
         assert_eq!(registry.len(), 1);
 
         // Duration::ZERO means every session has exceeded max duration immediately
-        let expired = registry.drain_exceeded_max_duration(Duration::ZERO);
+        let expired = registry.drain_expired(Duration::ZERO, Duration::from_secs(60));
         assert_eq!(expired.len(), 1);
         assert_eq!(registry.len(), 0);
     }
@@ -815,18 +819,21 @@ mod tests {
     #[test]
     fn agent_terminal_events_map_to_browser_messages() {
         let session_id = TerminalSessionId("remote-1".to_owned());
+        let registry = TerminalSessionRegistry::default();
         let output = super::agent_event_to_browser_message(
             AgentTerminalEvent::TerminalOutput {
                 session_id: session_id.clone(),
                 data: "hello\n".to_owned(),
             },
             &sunbolt_protocol::NodeId("node-1".to_owned()),
+            &registry,
         );
 
         assert_eq!(
             output,
             TerminalServerMessage::Output {
                 session_id: session_id.clone(),
+                sequence: 0,
                 data: "hello\n".to_owned(),
             }
         );
@@ -840,6 +847,7 @@ mod tests {
                 },
             },
             &sunbolt_protocol::NodeId("node-1".to_owned()),
+            &registry,
         );
 
         assert!(matches!(

@@ -1130,6 +1130,10 @@ pub struct Permission(&'static str);
 impl Permission {
     /// Permission required to open a terminal.
     pub const TERMINAL_OPEN: Self = Self("terminal.open");
+    /// Permission required to reattach a terminal.
+    pub const TERMINAL_REATTACH: Self = Self("terminal.reattach");
+    /// Permission required to terminate a terminal.
+    pub const TERMINAL_CLOSE: Self = Self("terminal.close");
     /// Permission required to view a node.
     pub const NODE_VIEW: Self = Self("node.view");
     /// Permission required to register a node.

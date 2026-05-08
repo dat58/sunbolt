@@ -20,11 +20,18 @@ use crate::{
     error::{ErrorResponse, StartupError},
     security,
     state::AppState,
-    terminal::{spawn_session_cleanup_worker, terminal_websocket},
+    terminal::{
+        list_active_terminal_sessions, list_detached_terminal_sessions,
+        spawn_session_cleanup_worker, terminal_websocket, terminate_terminal_session,
+    },
 };
 
 /// WebSocket path for browser terminal connections.
 pub const TERMINAL_WS_PATH: &str = "/terminal/ws";
+pub const TERMINAL_SESSIONS_ACTIVE_PATH: &str = "/terminal/sessions/active";
+pub const TERMINAL_SESSIONS_DETACHED_PATH: &str = "/terminal/sessions/detached";
+pub(crate) const TERMINAL_SESSION_TERMINATE_PATH: &str =
+    "/terminal/sessions/{session_id}/terminate";
 pub const HEALTH_PATH: &str = "/health";
 pub const AUTH_LOGIN_PATH: &str = "/auth/login";
 pub const AUTH_LOGOUT_PATH: &str = "/auth/logout";
@@ -81,6 +88,18 @@ pub(crate) fn build_router(state: AppState) -> Router {
     Router::new()
         .route(HEALTH_PATH, get(health))
         .route(TERMINAL_WS_PATH, get(terminal_websocket))
+        .route(
+            TERMINAL_SESSIONS_ACTIVE_PATH,
+            get(list_active_terminal_sessions).layer(auth_layer.clone()),
+        )
+        .route(
+            TERMINAL_SESSIONS_DETACHED_PATH,
+            get(list_detached_terminal_sessions).layer(auth_layer.clone()),
+        )
+        .route(
+            TERMINAL_SESSION_TERMINATE_PATH,
+            post(terminate_terminal_session).layer(auth_layer.clone()),
+        )
         .route(AUTH_LOGIN_PATH, post(auth::auth_login))
         .route(
             AUTH_MFA_STEP_UP_PATH,
@@ -208,12 +227,22 @@ mod tests {
         ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
         AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
         AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH,
-        NODE_DETAILS_PATH, NODE_REVOKE_PATH, TERMINAL_WS_PATH,
+        NODE_DETAILS_PATH, NODE_REVOKE_PATH, TERMINAL_SESSIONS_ACTIVE_PATH,
+        TERMINAL_SESSIONS_DETACHED_PATH, TERMINAL_SESSION_TERMINATE_PATH, TERMINAL_WS_PATH,
     };
 
     #[test]
     fn route_path_constants_preserve_public_api_paths() {
         assert_eq!(TERMINAL_WS_PATH, "/terminal/ws");
+        assert_eq!(TERMINAL_SESSIONS_ACTIVE_PATH, "/terminal/sessions/active");
+        assert_eq!(
+            TERMINAL_SESSIONS_DETACHED_PATH,
+            "/terminal/sessions/detached"
+        );
+        assert_eq!(
+            TERMINAL_SESSION_TERMINATE_PATH,
+            "/terminal/sessions/{session_id}/terminate"
+        );
         assert_eq!(HEALTH_PATH, "/health");
         assert_eq!(AUTH_LOGIN_PATH, "/auth/login");
         assert_eq!(AUTH_LOGOUT_PATH, "/auth/logout");

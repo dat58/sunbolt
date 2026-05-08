@@ -43,6 +43,9 @@ pub enum TerminalClientMessage {
     Close {
         session_id: TerminalSessionId,
     },
+    Terminate {
+        session_id: TerminalSessionId,
+    },
     Detach {
         session_id: TerminalSessionId,
     },
@@ -67,6 +70,7 @@ pub enum TerminalServerMessage {
     },
     Output {
         session_id: TerminalSessionId,
+        sequence: u64,
         data: String,
     },
     Exited {
@@ -154,6 +158,7 @@ pub enum TerminalErrorCode {
     Unauthorized,
     Forbidden,
     SessionNotFound,
+    SessionExpired,
     InvalidMessage,
     TerminalUnavailable,
     Internal,
@@ -288,6 +293,19 @@ mod tests {
             }
         );
 
+        let terminate: TerminalClientMessage = serde_json::from_value(json!({
+            "type": "terminate",
+            "session_id": "session-1"
+        }))
+        .expect("terminate message should deserialize");
+
+        assert_eq!(
+            terminate,
+            TerminalClientMessage::Terminate {
+                session_id: TerminalSessionId("session-1".to_owned()),
+            }
+        );
+
         let detach: TerminalClientMessage = serde_json::from_value(json!({
             "type": "detach",
             "session_id": "session-1"
@@ -356,6 +374,7 @@ mod tests {
 
         let output = serde_json::to_value(TerminalServerMessage::Output {
             session_id: TerminalSessionId("session-1".to_owned()),
+            sequence: 7,
             data: "hello\n".to_owned(),
         })
         .expect("output message should serialize");
@@ -365,6 +384,7 @@ mod tests {
             json!({
                 "type": "output",
                 "session_id": "session-1",
+                "sequence": 7,
                 "data": "hello\n"
             })
         );
