@@ -15,6 +15,7 @@ sunbolt-audit = { path = "../sunbolt-audit" }
 sunbolt-auth = { path = "../sunbolt-auth" }
 sunbolt-common = { path = "../sunbolt-common" }
 sunbolt-protocol = { path = "../sunbolt-protocol" }
+sunbolt-storage = { path = "../sunbolt-storage" }
 sunbolt-terminal = { path = "../sunbolt-terminal" }
 thiserror = { workspace = true }
 tokio = { workspace = true }

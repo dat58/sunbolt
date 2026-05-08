@@ -3371,6 +3371,7 @@ dependencies = [
  "sunbolt-auth",
  "sunbolt-common",
  "sunbolt-protocol",
+ "sunbolt-storage",
  "sunbolt-terminal",
  "thiserror 2.0.18",
  "tokio",

@@ -134,13 +134,13 @@ Goal: move production-critical state to PostgreSQL-backed repositories.
 
 ## Production State Migration
 
-- [ ] Ensure users are read from durable storage in production.
-- [ ] Ensure auth sessions are durable or backed by a production-grade session store.
-- [ ] Ensure recent MFA state is durable or recoverable.
-- [ ] Ensure nodes and credentials are durable.
-- [ ] Ensure terminal session metadata is durable.
-- [ ] Ensure audit logs are durable and append-only from the application perspective.
-- [ ] Ensure startup fails clearly in production when required storage config is missing.
+- [x] Ensure users are read from durable storage in production.
+- [x] Ensure auth sessions are durable or backed by a production-grade session store.
+- [x] Ensure recent MFA state is durable or recoverable.
+- [x] Ensure nodes and credentials are durable.
+- [x] Ensure terminal session metadata is durable.
+- [x] Ensure audit logs are durable and append-only from the application perspective.
+- [x] Ensure startup fails clearly in production when required storage config is missing.
 
 ## Tests
 

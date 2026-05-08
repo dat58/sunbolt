@@ -16,7 +16,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::{
     auth::require_auth_middleware,
-    error::ErrorResponse,
+    config::RuntimeMode,
+    error::{ErrorResponse, StartupError},
     security,
     state::AppState,
     terminal::{spawn_session_cleanup_worker, terminal_websocket},
@@ -39,9 +40,33 @@ pub const NODES_PATH: &str = "/nodes";
 pub(crate) const NODE_DETAILS_PATH: &str = "/nodes/{node_id}";
 pub(crate) const NODE_REVOKE_PATH: &str = "/nodes/{node_id}/revoke";
 
-/// Builds the control-plane router.
+/// Builds the control-plane router for development mode.
+///
+/// # Panics
+///
+/// Panics when `SUNBOLT_ENV=production` or when `SUNBOLT_ENV` is invalid.
+/// Production startup must use [`try_router`] so durable storage can be
+/// validated asynchronously before routes are served.
 pub fn router() -> Router {
-    build_router(AppState::from_env())
+    match RuntimeMode::from_env() {
+        Ok(RuntimeMode::Development) => build_router(AppState::development_from_env()),
+        Ok(RuntimeMode::Production) => {
+            panic!(
+                "production router startup requires async `try_router` for durable storage validation"
+            )
+        }
+        Err(error) => panic!("{error}"),
+    }
+}
+
+/// Builds the control-plane router from environment configuration.
+///
+/// # Errors
+///
+/// Returns an error when production mode lacks required durable storage
+/// configuration or the configured storage backend is unreachable.
+pub async fn try_router() -> Result<Router, StartupError> {
+    Ok(build_router(AppState::try_from_env().await?))
 }
 
 pub(crate) fn build_router(state: AppState) -> Router {
@@ -99,10 +124,13 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> impl IntoResponse {
+async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let production_state = state.state_summary();
     Json(HealthResponse {
         status: "ok",
         component: "sunbolt-control",
+        runtime_mode: production_state.runtime_mode,
+        production_state,
     })
 }
 
@@ -110,6 +138,8 @@ async fn health() -> impl IntoResponse {
 struct HealthResponse {
     status: &'static str,
     component: &'static str,
+    runtime_mode: &'static str,
+    production_state: crate::state::StateSummary,
 }
 
 pub(crate) async fn security_headers_middleware(request: Request, next: Next) -> Response {

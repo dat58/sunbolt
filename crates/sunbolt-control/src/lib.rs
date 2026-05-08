@@ -13,9 +13,10 @@ mod security;
 mod state;
 mod terminal;
 
+pub use error::StartupError;
 pub use routes::{
-    router, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
-    AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
+    router, try_router, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH,
+    AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
     AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH, TERMINAL_WS_PATH,
 };
 
@@ -31,10 +32,8 @@ pub(crate) use {
     auth::authorize_terminal_request,
     config::TerminalSessionConfig,
     error::{SessionLimitError, TerminalAuthorizationError},
-    node::NodeEnrollmentRegistry,
     rate_limit::SlidingWindowRateLimiter,
     routes::build_router,
-    routing::InMemoryNodeRouter,
     state::AppState,
     terminal::{
         agent_event_to_browser_message, exit_message, parse_client_message,
@@ -47,12 +46,11 @@ mod tests {
     use super::{
         authorize_terminal_request, build_router, component_name, exit_message,
         parse_client_message, terminal_size_from_protocol, AgentConnectionRegistry, AppState,
-        InMemoryNodeRouter, NodeEnrollmentRegistry, SessionLimitError, SlidingWindowRateLimiter,
-        TerminalAuthorizationError, TerminalSessionConfig, TerminalSessionRegistry,
-        ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
-        AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
-        AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH,
-        TERMINAL_WS_PATH,
+        SessionLimitError, SlidingWindowRateLimiter, TerminalAuthorizationError,
+        TerminalSessionConfig, TerminalSessionRegistry, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH,
+        AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH,
+        AUTH_MFA_STEP_UP_PATH, AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH,
+        NODES_PATH, TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
@@ -956,20 +954,12 @@ mod tests {
     }
 
     fn test_router_with_origins(allowed_origins: Vec<String>) -> axum::Router {
-        let auth = test_auth_service();
+        let mut state = AppState::development_with_auth(test_auth_service());
+        state.login_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.terminal_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.allowed_origins = allowed_origins;
 
-        build_router(AppState {
-            sessions: TerminalSessionRegistry::default(),
-            terminal_config: TerminalSessionConfig::from_env(),
-            auth,
-            audit: sunbolt_audit::AuditLog::default(),
-            node_enrollment: NodeEnrollmentRegistry::default(),
-            agent_connections: AgentConnectionRegistry::default(),
-            node_router: InMemoryNodeRouter::default(),
-            login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
-            terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
-            allowed_origins,
-        })
+        build_router(state)
     }
 
     fn test_auth_service() -> AuthService {
@@ -1142,19 +1132,10 @@ mod tests {
 
     #[tokio::test]
     async fn login_rate_limit_blocks_excessive_attempts() {
-        let auth = test_auth_service();
-        let router = build_router(AppState {
-            sessions: TerminalSessionRegistry::default(),
-            terminal_config: TerminalSessionConfig::from_env(),
-            auth,
-            audit: sunbolt_audit::AuditLog::default(),
-            node_enrollment: NodeEnrollmentRegistry::default(),
-            agent_connections: AgentConnectionRegistry::default(),
-            node_router: InMemoryNodeRouter::default(),
-            login_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 2),
-            terminal_rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 100),
-            allowed_origins: vec![],
-        });
+        let mut state = AppState::development_with_auth(test_auth_service());
+        state.login_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 2);
+        state.terminal_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        let router = build_router(state);
 
         let make_request = || {
             Request::builder()

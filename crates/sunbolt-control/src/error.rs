@@ -1,5 +1,7 @@
 use axum::http::StatusCode;
 use serde::Serialize;
+use sunbolt_storage::StorageError;
+use thiserror::Error;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorResponse {
@@ -62,4 +64,16 @@ pub(crate) enum NodeConnectionError {
     UnknownNode,
     InvalidCredential,
     Revoked,
+}
+
+#[derive(Debug, Error)]
+pub enum StartupError {
+    #[error("{0}")]
+    InvalidRuntimeMode(String),
+    #[error("production startup requires durable storage: {0}")]
+    MissingProductionStorage(#[source] StorageError),
+    #[error("production storage is not reachable: {0}")]
+    StorageUnavailable(#[source] StorageError),
+    #[error("production startup requires {state} to use durable or recoverable storage")]
+    NonDurableProductionState { state: &'static str },
 }

@@ -20,13 +20,16 @@ async fn main() -> std::process::ExitCode {
 
 async fn run() -> Result<(), ControlPlaneError> {
     let bind_addr = bind_addr()?;
+    let router = sunbolt_control::try_router()
+        .await
+        .map_err(ControlPlaneError::Startup)?;
     let listener = TcpListener::bind(bind_addr)
         .await
         .map_err(ControlPlaneError::Bind)?;
 
     info!(%bind_addr, "sunbolt control plane listening");
 
-    axum::serve(listener, sunbolt_control::router())
+    axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(ControlPlaneError::Serve)?;
@@ -66,6 +69,8 @@ enum ControlPlaneError {
     },
     #[error("failed to bind control-plane listener: {0}")]
     Bind(#[source] std::io::Error),
+    #[error("control-plane startup validation failed: {0}")]
+    Startup(#[source] sunbolt_control::StartupError),
     #[error("control-plane server failed: {0}")]
     Serve(#[source] std::io::Error),
 }
