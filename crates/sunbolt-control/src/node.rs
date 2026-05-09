@@ -80,8 +80,11 @@ struct NodeCredentialRecord {
     node_id: u64,
     credential_fingerprint: String,
     credential_proof: String,
+    created_at: Instant,
+    created_at_unix_secs: i64,
     expires_at: Instant,
     expires_at_unix_secs: i64,
+    rotated_from_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -101,6 +104,21 @@ pub(crate) struct NodeView {
     pub(crate) agent_version: String,
     pub(crate) status: NodeStatus,
     pub(crate) credential_expires_at_unix_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub(crate) struct RotatedNodeCredential {
+    pub(crate) credential_fingerprint: String,
+    pub(crate) credential_secret: String,
+    pub(crate) credential_created_at_unix_secs: i64,
+    pub(crate) credential_expires_at_unix_secs: i64,
+    pub(crate) previous_credential_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub(crate) struct NodeCredentialRotationResponse {
+    pub(crate) node: NodeView,
+    pub(crate) credential: RotatedNodeCredential,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,6 +180,7 @@ impl NodeEnrollmentRegistry {
         let id = self.next_node_id.fetch_add(1, Ordering::Relaxed);
         let node_id = format!("node-{id}");
         let (credential_secret, credential_fingerprint) = generate_node_credential();
+        let credential_created_at_unix_secs = unix_secs(SystemTime::now());
         let credential_expires_at_unix_secs = credential_expiration_unix_secs(SystemTime::now());
         let credential_expires_at = Instant::now() + NODE_CREDENTIAL_TTL;
         token.used_by_node_id = Some(id);
@@ -180,8 +199,11 @@ impl NodeEnrollmentRegistry {
             node_id: id,
             credential_fingerprint: credential_fingerprint.clone(),
             credential_proof: credential_proof(&node_id, &credential_secret),
+            created_at: Instant::now(),
+            created_at_unix_secs: credential_created_at_unix_secs,
             expires_at: credential_expires_at,
             expires_at_unix_secs: credential_expires_at_unix_secs,
+            rotated_from_fingerprint: None,
         });
         state.heartbeats.push(NodeHeartbeatRecord {
             node_id: id,
@@ -345,6 +367,58 @@ impl NodeEnrollmentRegistry {
         ))
     }
 
+    pub(crate) fn rotate_credential(
+        &self,
+        node_id: &str,
+    ) -> Result<NodeCredentialRotationResponse, NodeConnectionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let node_index = state
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or(NodeConnectionError::UnknownNode)?;
+        let node = &state.nodes[node_index];
+        if node.status == NodeStatus::Revoked {
+            return Err(NodeConnectionError::Revoked);
+        }
+
+        let previous_credential_fingerprint = latest_credential_for_node(&state, node.id)
+            .map(|credential| credential.credential_fingerprint.clone());
+        let (credential_secret, credential_fingerprint) = generate_node_credential();
+        let credential_created_at_unix_secs = unix_secs(SystemTime::now());
+        let credential_expires_at_unix_secs = credential_expiration_unix_secs(SystemTime::now());
+        let credential_expires_at = Instant::now() + NODE_CREDENTIAL_TTL;
+        let node_pk = node.id;
+        state.credentials.push(NodeCredentialRecord {
+            node_id: node_pk,
+            credential_fingerprint: credential_fingerprint.clone(),
+            credential_proof: credential_proof(node_id, &credential_secret),
+            created_at: Instant::now(),
+            created_at_unix_secs: credential_created_at_unix_secs,
+            expires_at: credential_expires_at,
+            expires_at_unix_secs: credential_expires_at_unix_secs,
+            rotated_from_fingerprint: previous_credential_fingerprint.clone(),
+        });
+
+        Ok(NodeCredentialRotationResponse {
+            node: node_view(
+                &state.nodes[node_index],
+                latest_heartbeat_at(&state, node_pk),
+                credential_expiration_for_node(&state, node_pk),
+            ),
+            credential: RotatedNodeCredential {
+                credential_fingerprint,
+                credential_secret,
+                credential_created_at_unix_secs,
+                credential_expires_at_unix_secs,
+                previous_credential_fingerprint,
+            },
+        })
+    }
+
     pub(crate) fn node_is_online(&self, node_id: &str) -> bool {
         self.node_details(node_id)
             .is_some_and(|node| node.status == NodeStatus::Online)
@@ -409,6 +483,32 @@ fn credential_expiration_for_node(state: &NodeEnrollmentState, node_id: u64) -> 
         .filter(|credential| credential.node_id == node_id)
         .map(|credential| credential.expires_at_unix_secs)
         .max()
+}
+
+fn latest_credential_for_node(
+    state: &NodeEnrollmentState,
+    node_id: u64,
+) -> Option<&NodeCredentialRecord> {
+    state
+        .credentials
+        .iter()
+        .filter(|credential| credential.node_id == node_id)
+        .max_by_key(|credential| {
+            (
+                credential.created_at,
+                credential.created_at_unix_secs,
+                credential.rotated_from_fingerprint.is_some(),
+            )
+        })
+}
+
+fn unix_secs(now: SystemTime) -> i64 {
+    i64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX)
 }
 
 fn node_view(

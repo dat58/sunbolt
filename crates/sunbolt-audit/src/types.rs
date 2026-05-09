@@ -19,6 +19,7 @@ pub enum AuditEventKind {
     AgentDisconnected,
     AgentAuthenticationFailed,
     NodeEnrolled,
+    NodeCredentialRotated,
     NodeRevoked,
 }
 
@@ -43,6 +44,7 @@ impl AuditEventKind {
             Self::AgentDisconnected => "agent.disconnected",
             Self::AgentAuthenticationFailed => "agent.authentication.failed",
             Self::NodeEnrolled => "node.enrolled",
+            Self::NodeCredentialRotated => "node.credential.rotated",
             Self::NodeRevoked => "node.revoked",
         }
     }
@@ -139,6 +141,10 @@ mod tests {
             "agent.authentication.failed"
         );
         assert_eq!(AuditEventKind::NodeEnrolled.as_str(), "node.enrolled");
+        assert_eq!(
+            AuditEventKind::NodeCredentialRotated.as_str(),
+            "node.credential.rotated"
+        );
         assert_eq!(AuditEventKind::NodeRevoked.as_str(), "node.revoked");
     }
 
@@ -151,6 +157,7 @@ mod tests {
         assert!(AuditEventKind::TerminalTerminated.is_access_history());
         assert!(AuditEventKind::TerminalClosed.is_access_history());
         assert!(!AuditEventKind::NodeEnrolled.is_access_history());
+        assert!(!AuditEventKind::NodeCredentialRotated.is_access_history());
         assert!(!AuditEventKind::NodeRevoked.is_access_history());
     }
 }

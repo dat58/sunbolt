@@ -298,22 +298,22 @@ Goal: move from enrollment-token bootstrap to production node trust.
 
 ## Rotation and Revocation
 
-- [ ] Add node credential rotation model.
-- [ ] Add rotation endpoint or command path.
-- [ ] Add audit event for credential rotation.
-- [ ] Enforce revocation on new connections.
-- [ ] Enforce revocation on active connections.
-- [ ] Terminate or detach active terminal sessions when a node is revoked.
-- [ ] Add audit events for forced terminal closure due to revocation.
+- [x] Add node credential rotation model.
+- [x] Add rotation endpoint or command path.
+- [x] Add audit event for credential rotation.
+- [x] Enforce revocation on new connections.
+- [x] Enforce revocation on active connections.
+- [x] Terminate or detach active terminal sessions when a node is revoked.
+- [x] Add audit events for forced terminal closure due to revocation.
 
 ## Tests
 
-- [ ] Test enrollment token is one-time.
-- [ ] Test durable node identity authenticates.
-- [ ] Test invalid credential is rejected.
-- [ ] Test revoked node cannot reconnect.
-- [ ] Test active node revocation closes or blocks terminal sessions.
-- [ ] Test credential rotation preserves authorized node access.
+- [x] Test enrollment token is one-time.
+- [x] Test durable node identity authenticates.
+- [x] Test invalid credential is rejected.
+- [x] Test revoked node cannot reconnect.
+- [x] Test active node revocation closes or blocks terminal sessions.
+- [x] Test credential rotation preserves authorized node access.
 
 ---
 

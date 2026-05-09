@@ -57,15 +57,16 @@ mod tests {
         body::Body,
         extract::ws::Message,
         http::{header, HeaderMap, Method, Request, StatusCode},
+        response::Response,
     };
     use serde_json::{json, Value};
     use std::{process::Command, sync::Arc, time::Duration};
     use sunbolt_audit::AuditEventKind;
     use sunbolt_auth::{AuthConfig, AuthService, SESSION_COOKIE_NAME};
     use sunbolt_protocol::{
-        AgentTerminalCommand, AgentTerminalEvent, TerminalClientMessage, TerminalError,
-        TerminalErrorCode, TerminalReconnectToken, TerminalServerMessage, TerminalSessionId,
-        TerminalSize,
+        transport::AgentTransportKind, AgentTerminalCommand, AgentTerminalEvent,
+        TerminalClientMessage, TerminalError, TerminalErrorCode, TerminalReconnectToken,
+        TerminalServerMessage, TerminalSessionId, TerminalSize, TerminalTransportStatus,
     };
     use sunbolt_terminal::{
         LocalPtySession, TerminalExitStatus, TerminalSessionState, TerminalSize as PtyTerminalSize,
@@ -855,6 +856,123 @@ mod tests {
         assert_eq!(heartbeat_response.status(), StatusCode::FORBIDDEN);
     }
 
+    #[tokio::test]
+    async fn credential_rotation_preserves_node_access_and_is_audited() {
+        let (router, state) = test_router_and_state();
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+        let enrollment = enroll_test_agent(&router, &cookie).await;
+
+        let rotate_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!(
+                        "{NODES_PATH}/{}/credentials/rotate",
+                        enrollment.node_id
+                    ))
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(rotate_response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(rotate_response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        let rotated_fingerprint = payload["rotation"]["credential"]["credential_fingerprint"]
+            .as_str()
+            .expect("rotated fingerprint should be present")
+            .to_owned();
+        let rotated_secret = payload["rotation"]["credential"]["credential_secret"]
+            .as_str()
+            .expect("rotated secret should be present")
+            .to_owned();
+
+        let old_heartbeat = post_agent_heartbeat(&router, &enrollment).await;
+        assert_eq!(old_heartbeat.status(), StatusCode::OK);
+
+        let rotated = TestEnrollment {
+            node_id: enrollment.node_id.clone(),
+            credential_fingerprint: rotated_fingerprint,
+            credential_secret: rotated_secret,
+        };
+        let rotated_heartbeat = post_agent_heartbeat(&router, &rotated).await;
+        assert_eq!(rotated_heartbeat.status(), StatusCode::OK);
+        assert!(state.audit.events().iter().any(|event| {
+            event.kind == AuditEventKind::NodeCredentialRotated
+                && event.message.contains(&enrollment.node_id)
+        }));
+    }
+
+    #[tokio::test]
+    async fn active_node_revocation_closes_remote_sessions_and_disconnects_agent() {
+        let (router, state) = test_router_and_state();
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+        let enrollment = enroll_test_agent(&router, &cookie).await;
+        let session_id = TerminalSessionId("remote-1".to_owned());
+        let (command_tx, mut command_rx) = mpsc::channel(4);
+        let (_event_tx, event_rx) = mpsc::channel(4);
+        state
+            .agent_connections
+            .register(&enrollment.node_id, command_tx.clone(), event_rx);
+        state
+            .sessions
+            .insert_remote(
+                session_id.clone(),
+                crate::terminal::RemoteTerminalSession {
+                    command_tx,
+                    node_id: enrollment.node_id.clone(),
+                    transport_status: TerminalTransportStatus {
+                        kind: AgentTransportKind::WebSocketTlsTcp443,
+                        degraded: false,
+                        message: None,
+                    },
+                },
+                TerminalSize { cols: 80, rows: 24 },
+                TerminalSessionConfig {
+                    max_sessions: 10,
+                    max_sessions_per_user: 10,
+                    max_sessions_per_node: 10,
+                    idle_timeout: Duration::from_secs(30 * 60),
+                    max_duration: Duration::from_secs(8 * 60 * 60),
+                    disconnect_grace: Duration::from_secs(30),
+                },
+                "admin@example.com".to_owned(),
+            )
+            .expect("remote session should insert");
+        state
+            .sessions
+            .set_state(&session_id, TerminalSessionState::Active);
+
+        let revoke_response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("{NODES_PATH}/{}/revoke", enrollment.node_id))
+                    .header(header::COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(revoke_response.status(), StatusCode::OK);
+        assert_eq!(state.sessions.len(), 0);
+        assert_eq!(state.agent_connections.len(), 0);
+        assert!(matches!(
+            command_rx.recv().await,
+            Some(AgentTerminalCommand::CloseTerminal { session_id: closed })
+                if closed == session_id
+        ));
+        let revoked_message = format!("node {} revoked", enrollment.node_id);
+        assert!(state.audit.events().iter().any(|event| {
+            event.kind == AuditEventKind::TerminalClosed && event.message.contains(&revoked_message)
+        }));
+    }
+
     #[test]
     fn agent_terminal_events_map_to_browser_messages() {
         let session_id = TerminalSessionId("remote-1".to_owned());
@@ -1120,6 +1238,32 @@ mod tests {
                 .expect("credential secret should be present")
                 .to_owned(),
         }
+    }
+
+    async fn post_agent_heartbeat(router: &axum::Router, enrollment: &TestEnrollment) -> Response {
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AGENT_HEARTBEAT_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "node_id": enrollment.node_id,
+                            "credential_fingerprint": enrollment.credential_fingerprint,
+                            "credential_proof": enrollment.credential_proof(),
+                            "hostname": "host-a",
+                            "os": "linux",
+                            "architecture": "x86_64",
+                            "agent_version": "0.1.0"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond")
     }
 
     async fn login_and_get_cookie(router: &axum::Router, email: &str, password: &str) -> String {

@@ -48,6 +48,7 @@ pub const AGENT_TRANSPORT_WS_PATH: &str = "/agent/transport/ws";
 pub const AGENT_TRANSPORT_LONG_POLL_PATH: &str = "/agent/transport/long-poll";
 pub const NODES_PATH: &str = "/nodes";
 pub(crate) const NODE_DETAILS_PATH: &str = "/nodes/{node_id}";
+pub(crate) const NODE_CREDENTIAL_ROTATE_PATH: &str = "/nodes/{node_id}/credentials/rotate";
 pub(crate) const NODE_REVOKE_PATH: &str = "/nodes/{node_id}/revoke";
 
 /// Builds the control-plane router for development mode.
@@ -129,6 +130,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route(
             NODE_DETAILS_PATH,
             get(node::node_details).layer(auth_layer.clone()),
+        )
+        .route(
+            NODE_CREDENTIAL_ROTATE_PATH,
+            post(node::rotate_node_credential).layer(auth_layer.clone()),
         )
         .route(
             NODE_REVOKE_PATH,
@@ -235,8 +240,9 @@ mod tests {
         ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AGENT_TRANSPORT_WS_PATH,
         AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
         AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH,
-        NODE_DETAILS_PATH, NODE_REVOKE_PATH, TERMINAL_SESSIONS_ACTIVE_PATH,
-        TERMINAL_SESSIONS_DETACHED_PATH, TERMINAL_SESSION_TERMINATE_PATH, TERMINAL_WS_PATH,
+        NODE_CREDENTIAL_ROTATE_PATH, NODE_DETAILS_PATH, NODE_REVOKE_PATH,
+        TERMINAL_SESSIONS_ACTIVE_PATH, TERMINAL_SESSIONS_DETACHED_PATH,
+        TERMINAL_SESSION_TERMINATE_PATH, TERMINAL_WS_PATH,
     };
 
     #[test]
@@ -265,6 +271,10 @@ mod tests {
         assert_eq!(AGENT_TRANSPORT_WS_PATH, "/agent/transport/ws");
         assert_eq!(NODES_PATH, "/nodes");
         assert_eq!(NODE_DETAILS_PATH, "/nodes/{node_id}");
+        assert_eq!(
+            NODE_CREDENTIAL_ROTATE_PATH,
+            "/nodes/{node_id}/credentials/rotate"
+        );
         assert_eq!(NODE_REVOKE_PATH, "/nodes/{node_id}/revoke");
     }
 }

@@ -1140,6 +1140,8 @@ impl Permission {
     pub const NODE_REGISTER: Self = Self("node.register");
     /// Permission required to revoke a node.
     pub const NODE_REVOKE: Self = Self("node.revoke");
+    /// Permission required to rotate node identity credentials.
+    pub const NODE_CREDENTIAL_ROTATE: Self = Self("node.credential.rotate");
     /// Permission required to manage users.
     pub const USER_MANAGE: Self = Self("user.manage");
     /// Permission required to manage roles.

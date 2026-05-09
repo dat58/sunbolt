@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sunbolt_audit::{AuditEventInput, AuditEventKind};
+use sunbolt_auth::Permission;
 use sunbolt_protocol::{TerminalErrorCode, TerminalServerMessage};
 
 use crate::{
@@ -35,6 +36,11 @@ struct NodeDetailsResponse {
     node: NodeView,
 }
 
+#[derive(Debug, Serialize)]
+struct NodeCredentialRotationRouteResponse {
+    rotation: crate::node::NodeCredentialRotationResponse,
+}
+
 pub(crate) async fn create_enrollment_token(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -60,6 +66,72 @@ pub(crate) async fn node_details(
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "node not found",
+            }),
+        )
+            .into_response(),
+    }
+}
+
+pub(crate) async fn rotate_node_credential(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(node_id): Path<String>,
+) -> impl IntoResponse {
+    match state
+        .auth
+        .user_has_node_permission(&user.0, &node_id, Permission::NODE_CREDENTIAL_ROTATE)
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "node credential rotation is not permitted",
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "auth service unavailable",
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    match state.node_enrollment.rotate_credential(&node_id) {
+        Ok(rotation) => {
+            state.audit.record(AuditEventInput {
+                kind: AuditEventKind::NodeCredentialRotated,
+                actor_email: Some(user.0.email),
+                message: format!(
+                    "node {node_id} credential rotated to {}",
+                    rotation.credential.credential_fingerprint
+                ),
+            });
+            Json(NodeCredentialRotationRouteResponse { rotation }).into_response()
+        }
+        Err(NodeConnectionError::UnknownNode) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "node not found",
+            }),
+        )
+            .into_response(),
+        Err(NodeConnectionError::Revoked) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "node revoked",
+            }),
+        )
+            .into_response(),
+        Err(NodeConnectionError::InvalidCredential | NodeConnectionError::CredentialExpired) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "node credential cannot be rotated",
             }),
         )
             .into_response(),
