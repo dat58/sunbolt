@@ -33,6 +33,12 @@
     @apply flex flex-col gap-4 border-b border-terminal-border/80 bg-terminal-surface/90 px-4 py-4 shadow-2xl shadow-black/30 backdrop-blur md:flex-row md:items-center md:justify-between md:px-6;
   }
 
+  @media (min-width: 1024px) {
+    .sunbolt-topbar {
+      @apply px-6 py-3;
+    }
+  }
+
   .sunbolt-brand {
     @apply flex min-w-0 items-center gap-3;
   }
@@ -54,7 +60,27 @@
   }
 
   .sunbolt-page {
-    @apply min-h-0 overflow-auto p-4 md:p-6;
+    @apply grid min-h-0 content-start gap-4 overflow-auto p-4 md:p-6;
+  }
+
+  .sunbolt-page-header {
+    @apply flex flex-col gap-3 md:flex-row md:items-end md:justify-between;
+  }
+
+  .sunbolt-dashboard-grid {
+    @apply grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4;
+  }
+
+  .sunbolt-dashboard-main {
+    @apply grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,0.8fr)];
+  }
+
+  .sunbolt-metric-card {
+    @apply rounded-2xl border border-terminal-border/80 bg-terminal-surface/90 p-4 shadow-xl shadow-black/20 ring-1 ring-white/5;
+  }
+
+  .sunbolt-metric-value {
+    @apply mt-2 block text-3xl font-black tracking-tight text-terminal-text;
   }
 
   .sunbolt-terminal-page {
@@ -62,8 +88,20 @@
     height: 100%;
   }
 
+  @media (min-width: 1024px) {
+    .sunbolt-terminal-page {
+      @apply gap-2 px-4 py-3;
+    }
+  }
+
   .sunbolt-terminal-toolbar {
     @apply flex flex-col gap-4 rounded-2xl border border-terminal-border/80 bg-terminal-surface/95 p-4 shadow-2xl shadow-black/25 backdrop-blur lg:flex-row lg:items-center lg:justify-between;
+  }
+
+  @media (min-width: 1024px) {
+    .sunbolt-terminal-toolbar {
+      @apply gap-3 rounded-xl px-4 py-3;
+    }
   }
 
   .sunbolt-terminal-controls {
@@ -113,6 +151,14 @@
     @apply rounded-2xl border border-terminal-border/80 bg-terminal-surface/90 p-4 shadow-xl shadow-black/20 ring-1 ring-white/5;
   }
 
+  .sunbolt-table-toolbar {
+    @apply mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between;
+  }
+
+  .sunbolt-table-toolbar-actions {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
   .sunbolt-table-wrap {
     @apply overflow-auto rounded-2xl border border-terminal-border/80 bg-terminal-bg/60;
   }
@@ -135,6 +181,18 @@
 
   .sunbolt-table tbody tr:last-child td {
     @apply border-b-0;
+  }
+
+  .sunbolt-pagination {
+    @apply mt-3 flex flex-col gap-3 text-xs text-terminal-muted md:flex-row md:items-center md:justify-between;
+  }
+
+  .sunbolt-dense-list {
+    @apply grid gap-2;
+  }
+
+  .sunbolt-dense-row {
+    @apply flex min-h-14 items-center justify-between gap-3 rounded-xl border border-terminal-border/70 bg-terminal-bg/70 px-3 py-2;
   }
 
   .sunbolt-command {

@@ -6,12 +6,18 @@ pub mod layout {
     pub const BRAND_MARK: &str = "sunbolt-brand-mark";
     pub const NAV: &str = "sunbolt-nav";
     pub const PAGE: &str = "sunbolt-page";
+    pub const PAGE_HEADER: &str = "sunbolt-page-header";
+    pub const DASHBOARD_GRID: &str = "sunbolt-dashboard-grid";
+    pub const DASHBOARD_MAIN: &str = "sunbolt-dashboard-main";
     pub const CARD: &str = "sunbolt-card";
 }
 
 pub mod table_list {
+    pub const TOOLBAR: &str = "sunbolt-table-toolbar";
+    pub const TOOLBAR_ACTIONS: &str = "sunbolt-table-toolbar-actions";
     pub const TABLE_WRAP: &str = "sunbolt-table-wrap";
     pub const TABLE: &str = "sunbolt-table";
+    pub const PAGINATION: &str = "sunbolt-pagination";
     pub const DENSE_LIST: &str = "sunbolt-dense-list";
     pub const DENSE_ROW: &str = "sunbolt-dense-row";
 }

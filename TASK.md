@@ -337,12 +337,12 @@ Goal: redesign the UI into reusable pages and components that work across device
 
 ## Desktop and Laptop
 
-- [ ] Add full navigation layout.
-- [ ] Add dense dashboard layout.
-- [ ] Add multi-tab terminal workspace.
-- [ ] Add node management table with search/filter affordances.
-- [ ] Add audit and access history table views.
-- [ ] Ensure terminal viewport gets primary screen space.
+- [x] Add full navigation layout.
+- [x] Add dense dashboard layout.
+- [x] Add multi-tab terminal workspace.
+- [x] Add node management table with search/filter affordances.
+- [x] Add audit and access history table views.
+- [x] Ensure terminal viewport gets primary screen space.
 
 ## Tablet
 

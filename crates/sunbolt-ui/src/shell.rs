@@ -4,7 +4,8 @@ use crate::api_client::control_plane_config_script;
 use crate::browser_bridge::terminal_bridge_script;
 use crate::components::{button_class, layout, ButtonVariant};
 use crate::pages::{
-    AccessHistoryPage, AdminPage, AuditLogPage, NodesPage, SecurityPage, TerminalPageBody,
+    AccessHistoryPage, AdminPage, AuditLogPage, DashboardPage, NodesPage, SecurityPage,
+    TerminalPageBody,
 };
 use crate::{XTERM_SCRIPT_URL, XTERM_STYLESHEET_URL};
 
@@ -17,7 +18,7 @@ pub fn app_title() -> String {
 /// Root Dioxus app for the Sunbolt web UI.
 #[component]
 pub fn App() -> Element {
-    let mut page = use_signal(|| ShellPage::Terminal);
+    let mut page = use_signal(|| ShellPage::Dashboard);
 
     rsx! {
         main {
@@ -47,6 +48,11 @@ pub fn App() -> Element {
                     nav {
                         class: layout::NAV,
                         "aria-label": "Primary navigation",
+                        button {
+                            class: nav_class(page(), ShellPage::Dashboard),
+                            onclick: move |_| page.set(ShellPage::Dashboard),
+                            "Dashboard"
+                        }
                         button {
                             class: nav_class(page(), ShellPage::Terminal),
                             onclick: move |_| page.set(ShellPage::Terminal),
@@ -80,6 +86,7 @@ pub fn App() -> Element {
                     }
                 }
                 match page() {
+                    ShellPage::Dashboard => rsx! { DashboardPage {} },
                     ShellPage::Terminal => rsx! { TerminalPageBody {} },
                     ShellPage::AccessHistory => rsx! { AccessHistoryPage {} },
                     ShellPage::Nodes => rsx! { NodesPage {} },
@@ -119,6 +126,7 @@ pub fn App() -> Element {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ShellPage {
+    Dashboard,
     Terminal,
     AccessHistory,
     Nodes,

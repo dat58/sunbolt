@@ -9,6 +9,162 @@ use crate::terminal_workspace::{
 };
 use crate::TERMINAL_WS_ENDPOINT;
 
+#[component]
+pub fn DashboardPage() -> Element {
+    rsx! {
+        section {
+            class: layout::PAGE,
+            div {
+                class: layout::PAGE_HEADER,
+                div {
+                    class: "min-w-0",
+                    h2 {
+                        class: "m-0 text-lg font-black tracking-tight text-terminal-text",
+                        "Production Dashboard"
+                    }
+                    p {
+                        class: "m-0 text-sm text-terminal-muted",
+                        "Dense control-plane overview for terminal operations, agent health, and security review."
+                    }
+                }
+                div {
+                    class: table_list::TOOLBAR_ACTIONS,
+                    button { class: button_class(ButtonVariant::Primary), "Open Terminal" }
+                    button { class: button_class(ButtonVariant::Secondary), "Review Audit" }
+                }
+            }
+            div {
+                class: layout::DASHBOARD_GRID,
+                MetricCard {
+                    label: "Active Sessions",
+                    value: "3",
+                    detail: "2 local, 1 remote"
+                }
+                MetricCard {
+                    label: "Connected Nodes",
+                    value: "1",
+                    detail: "1 degraded transport"
+                }
+                MetricCard {
+                    label: "Detached Sessions",
+                    value: "2",
+                    detail: "Reattach window active"
+                }
+                MetricCard {
+                    label: "Audit Events",
+                    value: "128",
+                    detail: "Last 24 hours"
+                }
+            }
+            div {
+                class: layout::DASHBOARD_MAIN,
+                div {
+                    class: layout::CARD,
+                    div {
+                        class: table_list::TOOLBAR,
+                        div {
+                            h3 {
+                                class: "m-0 text-lg font-black tracking-tight text-terminal-text",
+                                "Terminal Queue"
+                            }
+                            p {
+                                class: "m-0 text-xs text-terminal-muted",
+                                "Open, detached, and degraded sessions."
+                            }
+                        }
+                        div {
+                            class: table_list::TOOLBAR_ACTIONS,
+                            input {
+                                class: form::TEXT_INPUT,
+                                r#type: "search",
+                                placeholder: "Search sessions"
+                            }
+                            select {
+                                class: form::TEXT_INPUT,
+                                "aria-label": "Session state filter",
+                                option { "All states" }
+                                option { "Active" }
+                                option { "Detached" }
+                                option { "Degraded" }
+                            }
+                        }
+                    }
+                    div {
+                        class: table_list::TABLE_WRAP,
+                        table {
+                            class: table_list::TABLE,
+                            thead {
+                                tr {
+                                    th { "Session" }
+                                    th { "Node" }
+                                    th { "State" }
+                                    th { "Owner" }
+                                    th { "Updated" }
+                                }
+                            }
+                            tbody {
+                                tr {
+                                    td { class: "font-mono text-xs text-terminal-text", "term-84f2a9" }
+                                    td { class: "text-terminal-text", "local" }
+                                    td {
+                                        span { class: status_badge_class(StatusTone::Connected), "active" }
+                                    }
+                                    td { class: "text-terminal-text", "admin@example.com" }
+                                    td { class: "text-terminal-muted", "just now" }
+                                }
+                                tr {
+                                    td { class: "font-mono text-xs text-terminal-text", "term-d19344" }
+                                    td { class: "text-terminal-text", "node-1" }
+                                    td {
+                                        span { class: status_badge_class(StatusTone::Degraded), "degraded" }
+                                    }
+                                    td { class: "text-terminal-text", "admin@example.com" }
+                                    td { class: "text-terminal-muted", "2 min ago" }
+                                }
+                            }
+                        }
+                    }
+                }
+                div {
+                    class: layout::CARD,
+                    div {
+                        class: table_list::TOOLBAR,
+                        div {
+                            h3 {
+                                class: "m-0 text-lg font-black tracking-tight text-terminal-text",
+                                "Security Review"
+                            }
+                            p {
+                                class: "m-0 text-xs text-terminal-muted",
+                                "Recent high-signal events."
+                            }
+                        }
+                        button { class: button_class(ButtonVariant::Secondary), "View all" }
+                    }
+                    div {
+                        class: table_list::DENSE_LIST,
+                        DashboardEvent {
+                            event: "terminal.opened",
+                            actor: "admin@example.com",
+                            detail: "local shell"
+                        }
+                        DashboardEvent {
+                            event: "agent.transport.negotiated",
+                            actor: "node-1",
+                            detail: "WebSocket TCP/443"
+                        }
+                        DashboardEvent {
+                            event: "terminal.detached",
+                            actor: "admin@example.com",
+                            detail: "term-d19344"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// First local terminal page.
 #[component]
 pub fn TerminalPageBody() -> Element {
@@ -145,11 +301,37 @@ pub fn AccessHistoryPage() -> Element {
         section {
             class: layout::PAGE,
             div {
-                class: layout::CARD,
-                h2 {
-                    class: "mb-3 mt-0 text-lg font-black tracking-tight text-terminal-text",
-                    "Access History"
+                class: layout::PAGE_HEADER,
+                div {
+                    class: "min-w-0",
+                    h2 {
+                        class: "m-0 text-lg font-black tracking-tight text-terminal-text",
+                        "Access History"
+                    }
+                    p {
+                        class: "m-0 text-sm text-terminal-muted",
+                        "Authentication, MFA, and terminal access events optimized for desktop review."
+                    }
                 }
+                div {
+                    class: table_list::TOOLBAR_ACTIONS,
+                    input {
+                        class: form::TEXT_INPUT,
+                        r#type: "search",
+                        placeholder: "Search actor or event"
+                    }
+                    select {
+                        class: form::TEXT_INPUT,
+                        "aria-label": "Access history filter",
+                        option { "All access events" }
+                        option { "Login events" }
+                        option { "MFA events" }
+                        option { "Terminal events" }
+                    }
+                }
+            }
+            div {
+                class: layout::CARD,
                 div {
                     class: table_list::TABLE_WRAP,
                     table {
@@ -172,6 +354,7 @@ pub fn AccessHistoryPage() -> Element {
                         }
                     }
                 }
+                TablePagination { label: "1-1 of 1 access records" }
             }
         }
     }
@@ -183,11 +366,38 @@ pub fn AuditLogPage() -> Element {
         section {
             class: layout::PAGE,
             div {
-                class: layout::CARD,
-                h2 {
-                    class: "mb-3 mt-0 text-lg font-black tracking-tight text-terminal-text",
-                    "Audit Logs"
+                class: layout::PAGE_HEADER,
+                div {
+                    class: "min-w-0",
+                    h2 {
+                        class: "m-0 text-lg font-black tracking-tight text-terminal-text",
+                        "Audit Logs"
+                    }
+                    p {
+                        class: "m-0 text-sm text-terminal-muted",
+                        "Append-only security events with fast desktop filtering."
+                    }
                 }
+                div {
+                    class: table_list::TOOLBAR_ACTIONS,
+                    input {
+                        class: form::TEXT_INPUT,
+                        r#type: "search",
+                        placeholder: "Search audit logs"
+                    }
+                    select {
+                        class: form::TEXT_INPUT,
+                        "aria-label": "Audit kind filter",
+                        option { "All audit kinds" }
+                        option { "Terminal" }
+                        option { "Agent" }
+                        option { "Node" }
+                        option { "Permission" }
+                    }
+                }
+            }
+            div {
+                class: layout::CARD,
                 div {
                     class: table_list::TABLE_WRAP,
                     table {
@@ -210,6 +420,7 @@ pub fn AuditLogPage() -> Element {
                         }
                     }
                 }
+                TablePagination { label: "1-1 of 1 audit records" }
             }
         }
     }
@@ -220,6 +431,38 @@ pub fn NodesPage() -> Element {
     rsx! {
         section {
             class: "sunbolt-page grid gap-4",
+            div {
+                class: layout::PAGE_HEADER,
+                div {
+                    class: "min-w-0",
+                    h2 {
+                        class: "m-0 text-lg font-black tracking-tight text-terminal-text",
+                        "Node Management"
+                    }
+                    p {
+                        class: "m-0 text-sm text-terminal-muted",
+                        "Search, filter, inspect, and revoke managed agent nodes."
+                    }
+                }
+                div {
+                    class: table_list::TOOLBAR_ACTIONS,
+                    input {
+                        class: form::TEXT_INPUT,
+                        r#type: "search",
+                        placeholder: "Search nodes"
+                    }
+                    select {
+                        class: form::TEXT_INPUT,
+                        "aria-label": "Node status filter",
+                        option { "All statuses" }
+                        option { "Online" }
+                        option { "Degraded" }
+                        option { "Offline" }
+                        option { "Revoked" }
+                    }
+                    button { class: button_class(ButtonVariant::Primary), "Enroll node" }
+                }
+            }
             div {
                 class: layout::CARD,
                 h2 {
@@ -236,34 +479,58 @@ pub fn NodesPage() -> Element {
                 }
             }
             div {
-                class: table_list::TABLE_WRAP,
-                table {
-                    class: table_list::TABLE,
-                    thead {
-                        tr {
-                            th { "Node" }
-                            th { "Hostname" }
-                            th { "OS" }
-                            th { "Status" }
-                            th { "Actions" }
+                class: layout::CARD,
+                div {
+                    class: table_list::TOOLBAR,
+                    div {
+                        h3 {
+                            class: "m-0 text-lg font-black tracking-tight text-terminal-text",
+                            "Managed Nodes"
+                        }
+                        p {
+                            class: "m-0 text-xs text-terminal-muted",
+                            "Desktop table with search and status filters."
                         }
                     }
-                    tbody {
-                        tr {
-                            td { class: "font-mono text-xs text-terminal-text", "node-1" }
-                            td { class: "text-terminal-text", "host-a" }
-                            td { class: "text-terminal-text", "linux" }
-                            td {
-                                span { class: status_badge_class(StatusTone::Connected), "online" }
+                    div {
+                        class: table_list::TOOLBAR_ACTIONS,
+                        button { class: button_class(ButtonVariant::Secondary), "Export" }
+                        button { class: button_class(ButtonVariant::Secondary), "Refresh" }
+                    }
+                }
+                div {
+                    class: table_list::TABLE_WRAP,
+                    table {
+                        class: table_list::TABLE,
+                        thead {
+                            tr {
+                                th { "Node" }
+                                th { "Hostname" }
+                                th { "OS" }
+                                th { "Status" }
+                                th { "Last Seen" }
+                                th { "Actions" }
                             }
-                            td {
-                                class: "flex gap-2",
-                                button { class: button_class(ButtonVariant::Secondary), "Details" }
-                                button { class: button_class(ButtonVariant::Danger), "Revoke" }
+                        }
+                        tbody {
+                            tr {
+                                td { class: "font-mono text-xs text-terminal-text", "node-1" }
+                                td { class: "text-terminal-text", "host-a" }
+                                td { class: "text-terminal-text", "linux" }
+                                td {
+                                    span { class: status_badge_class(StatusTone::Connected), "online" }
+                                }
+                                td { class: "text-terminal-muted", "30 sec ago" }
+                                td {
+                                    class: "flex gap-2",
+                                    button { class: button_class(ButtonVariant::Secondary), "Details" }
+                                    button { class: button_class(ButtonVariant::Danger), "Revoke" }
+                                }
                             }
                         }
                     }
                 }
+                TablePagination { label: "1-1 of 1 nodes" }
             }
             div {
                 class: layout::CARD,
@@ -446,6 +713,74 @@ fn AdminTable(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn MetricCard(label: &'static str, value: &'static str, detail: &'static str) -> Element {
+    rsx! {
+        div {
+            class: "sunbolt-metric-card",
+            p {
+                class: "m-0 text-xs font-semibold text-terminal-muted",
+                "{label}"
+            }
+            strong {
+                class: "sunbolt-metric-value",
+                "{value}"
+            }
+            p {
+                class: "m-0 text-xs text-terminal-muted",
+                "{detail}"
+            }
+        }
+    }
+}
+
+#[component]
+fn DashboardEvent(event: &'static str, actor: &'static str, detail: &'static str) -> Element {
+    rsx! {
+        div {
+            class: table_list::DENSE_ROW,
+            div {
+                class: "min-w-0",
+                p {
+                    class: "m-0 font-mono text-xs text-lightning-cyan",
+                    "{event}"
+                }
+                p {
+                    class: "m-0 text-xs text-terminal-muted",
+                    "{detail}"
+                }
+            }
+            span {
+                class: "text-xs text-terminal-text",
+                "{actor}"
+            }
+        }
+    }
+}
+
+#[component]
+fn TablePagination(label: &'static str) -> Element {
+    rsx! {
+        div {
+            class: table_list::PAGINATION,
+            span { "{label}" }
+            div {
+                class: table_list::TOOLBAR_ACTIONS,
+                button {
+                    class: button_class(ButtonVariant::Secondary),
+                    disabled: true,
+                    "Previous"
+                }
+                button {
+                    class: button_class(ButtonVariant::Secondary),
+                    disabled: true,
+                    "Next"
                 }
             }
         }

@@ -25,8 +25,8 @@ mod tests {
     };
     use crate::browser_bridge::{terminal_bridge_script, XTERM_SCRIPT_URL, XTERM_STYLESHEET_URL};
     use crate::components::{
-        bottom_sheet, button_class, dialog, form, status_badge_class, table_list, ButtonVariant,
-        StatusTone,
+        bottom_sheet, button_class, dialog, form, layout, status_badge_class, table_list,
+        ButtonVariant, StatusTone,
     };
     use crate::shell::app_title;
     use crate::terminal_workspace::{
@@ -85,10 +85,13 @@ mod tests {
         );
         assert!(status_badge_class(StatusTone::Connected).contains("lightning-cyan"));
         assert_eq!(table_list::TABLE, "sunbolt-table");
+        assert_eq!(table_list::TOOLBAR, "sunbolt-table-toolbar");
+        assert_eq!(table_list::PAGINATION, "sunbolt-pagination");
         assert_eq!(table_list::DENSE_LIST, "sunbolt-dense-list");
         assert_eq!(form::TEXT_INPUT, "sunbolt-input");
         assert_eq!(dialog::MODAL, "sunbolt-modal");
         assert_eq!(bottom_sheet::SHEET, "sunbolt-bottom-sheet");
+        assert_eq!(layout::DASHBOARD_GRID, "sunbolt-dashboard-grid");
     }
 
     #[test]
