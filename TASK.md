@@ -323,17 +323,17 @@ Goal: redesign the UI into reusable pages and components that work across device
 
 ## UI Structure
 
-- [ ] Split `sunbolt-ui/src/lib.rs` into focused modules.
-- [ ] Add reusable layout components.
-- [ ] Add reusable button components.
-- [ ] Add reusable status badge components.
-- [ ] Add reusable table/list components.
-- [ ] Add reusable form components.
-- [ ] Add reusable modal/dialog components.
-- [ ] Add reusable bottom sheet components for mobile.
-- [ ] Add centralized API client module.
-- [ ] Add terminal workspace state module.
-- [ ] Move large browser bridge code into a maintainable asset/module boundary.
+- [x] Split `sunbolt-ui/src/lib.rs` into focused modules.
+- [x] Add reusable layout components.
+- [x] Add reusable button components.
+- [x] Add reusable status badge components.
+- [x] Add reusable table/list components.
+- [x] Add reusable form components.
+- [x] Add reusable modal/dialog components.
+- [x] Add reusable bottom sheet components for mobile.
+- [x] Add centralized API client module.
+- [x] Add terminal workspace state module.
+- [x] Move large browser bridge code into a maintainable asset/module boundary.
 
 ## Desktop and Laptop
 
@@ -529,7 +529,7 @@ Goal: define the checks required before treating a build as production-ready.
 Add bugs here as they are discovered.
 
 - [ ] Remote terminal reattach is not production-complete.
-- [ ] UI still needs production component/page split.
+- [x] UI still needs production component/page split.
 - [ ] Some production-critical state is still in memory.
 - [ ] Agent-control-plane transport still needs production TCP/443 baseline.
 
