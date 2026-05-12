@@ -57,6 +57,19 @@ impl NodeRoute {
             },
         }
     }
+
+    #[must_use]
+    pub fn route_id(&self) -> String {
+        match self {
+            Self::DirectAgent { target_node_id } => {
+                format!("direct-agent:{}", target_node_id.0)
+            }
+            Self::RelayNode {
+                relay_node_id,
+                target_node_id,
+            } => format!("relay:{}:{}", relay_node_id.0, target_node_id.0),
+        }
+    }
 }
 
 /// Health-tracked endpoint for route selection.
@@ -255,5 +268,24 @@ mod tests {
 
         router.record_success(&route);
         assert_eq!(router.route_health(&endpoint), RouteHealth::Healthy);
+    }
+
+    #[test]
+    fn route_ids_are_stable_for_tracing() {
+        assert_eq!(
+            NodeRoute::DirectAgent {
+                target_node_id: NodeId("node-1".to_owned())
+            }
+            .route_id(),
+            "direct-agent:node-1"
+        );
+        assert_eq!(
+            NodeRoute::RelayNode {
+                target_node_id: NodeId("node-1".to_owned()),
+                relay_node_id: NodeId("relay-1".to_owned())
+            }
+            .route_id(),
+            "relay:relay-1:node-1"
+        );
     }
 }

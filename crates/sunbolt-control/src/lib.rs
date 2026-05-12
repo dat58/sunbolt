@@ -6,6 +6,7 @@ mod auth;
 mod config;
 mod error;
 mod node;
+mod observability;
 mod rate_limit;
 mod routes;
 mod routing;
@@ -1413,7 +1414,50 @@ mod tests {
         );
         assert_eq!(
             response.headers().get(header::ACCESS_CONTROL_ALLOW_HEADERS),
-            Some(&header::HeaderValue::from_static("content-type"))
+            Some(&header::HeaderValue::from_static(
+                "content-type, x-request-id"
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_include_request_id_header() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(HEALTH_PATH)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .expect("request id should be generated")
+            .to_str()
+            .expect("request id should be visible ascii");
+
+        assert!(request_id.starts_with("req-"));
+    }
+
+    #[tokio::test]
+    async fn incoming_request_id_is_propagated() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(HEALTH_PATH)
+                    .header("x-request-id", "client-request-1")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(
+            response.headers().get("x-request-id"),
+            Some(&header::HeaderValue::from_static("client-request-1"))
         );
     }
 

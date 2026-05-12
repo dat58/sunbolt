@@ -90,6 +90,7 @@ pub(crate) async fn require_auth_middleware(
         }
     };
 
+    crate::observability::record_actor_email(&user.email);
     request.extensions_mut().insert(AuthenticatedUser(user));
     next.run(request).await
 }

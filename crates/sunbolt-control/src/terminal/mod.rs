@@ -33,6 +33,7 @@ use tokio::{
     sync::{broadcast, mpsc},
     task,
 };
+use tracing::{field, info, info_span};
 
 pub(crate) use session_registry::{
     RemoteTerminalSession, TerminalBackend, TerminalSessionRegistry, TerminalSessionSummary,
@@ -69,6 +70,7 @@ pub(crate) async fn list_active_terminal_sessions(
     State(state): State<AppState>,
     Extension(AuthenticatedUser(user)): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
+    crate::observability::record_actor_email(&user.email);
     Json(TerminalSessionListResponse {
         sessions: state.sessions.list_sessions_for_actor(
             &user.email,
@@ -84,6 +86,7 @@ pub(crate) async fn list_detached_terminal_sessions(
     State(state): State<AppState>,
     Extension(AuthenticatedUser(user)): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
+    crate::observability::record_actor_email(&user.email);
     Json(TerminalSessionListResponse {
         sessions: state
             .sessions
@@ -97,6 +100,18 @@ pub(crate) async fn terminate_terminal_session(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     let session_id = TerminalSessionId(session_id);
+    let actor_email = user.email.clone();
+    crate::observability::record_actor_email(&actor_email);
+    crate::observability::record_session_id(&session_id.0);
+    if let Some(node_id) = state.sessions.node_id(&session_id) {
+        crate::observability::record_node_id(&node_id);
+    }
+    info_span!(
+        "terminal.terminate",
+        actor_email = %actor_email,
+        session_id = %session_id.0,
+    )
+    .in_scope(|| info!("terminal terminate requested"));
     if !state.sessions.owner_matches(&session_id, &user.email) {
         return (
             StatusCode::NOT_FOUND,
@@ -135,7 +150,7 @@ pub(crate) async fn terminate_terminal_session(
     }
     state.audit.record(AuditEventInput {
         kind: AuditEventKind::TerminalTerminated,
-        actor_email: Some(user.email),
+        actor_email: Some(actor_email),
         message: format!("terminal session {} explicitly terminated", session_id.0),
     });
     Json(TerminalTerminateResponse {
@@ -182,6 +197,7 @@ pub(crate) async fn terminal_websocket(
                 .into_response();
         }
     };
+    crate::observability::record_actor_email(&user.email);
 
     if !state.terminal_rate_limiter.check_and_record(&user.email) {
         state.audit.record(AuditEventInput {
@@ -222,8 +238,11 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, user: Us
 
     let initial_size = terminal_size_from_protocol(start.initial_size);
     let session_id = next_session_id();
+    crate::observability::record_actor_email(&actor_email);
+    crate::observability::record_session_id(&session_id.0);
 
     if let Some(node_id) = start.node_id {
+        crate::observability::record_node_id(&node_id.0);
         handle_remote_terminal_socket(
             socket,
             state,
@@ -235,6 +254,14 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, user: Us
         .await;
         return;
     }
+
+    info_span!(
+        "terminal.open",
+        actor_email = %actor_email,
+        session_id = %session_id.0,
+        node_id = field::Empty,
+    )
+    .in_scope(|| info!("local terminal open requested"));
 
     let session = match LocalPtySession::spawn_default_shell(initial_size) {
         Ok(session) => Arc::new(session),
@@ -447,6 +474,17 @@ async fn handle_terminal_reattach(
     reconnect_token: TerminalReconnectToken,
 ) {
     let actor_email = user.email.clone();
+    crate::observability::record_actor_email(&actor_email);
+    crate::observability::record_session_id(&session_id.0);
+    if let Some(node_id) = state.sessions.node_id(&session_id) {
+        crate::observability::record_node_id(&node_id);
+    }
+    info_span!(
+        "terminal.reattach",
+        actor_email = %actor_email,
+        session_id = %session_id.0,
+    )
+    .in_scope(|| info!("terminal reattach requested"));
     if !authorize_session_reattach(&state, &user, &session_id) {
         let mut socket = socket;
         let _ = send_server_message(
@@ -721,6 +759,13 @@ fn audit_terminal_detached(
     session_id: &TerminalSessionId,
     reason: &str,
 ) {
+    info_span!(
+        "terminal.detach",
+        actor_email = %actor_email,
+        session_id = %session_id.0,
+        reason = %reason,
+    )
+    .in_scope(|| info!("terminal detached"));
     audit.record(AuditEventInput {
         kind: AuditEventKind::TerminalDetached,
         actor_email: Some(actor_email.to_owned()),
@@ -798,6 +843,16 @@ async fn handle_remote_terminal_socket(
     initial_size: ProtocolTerminalSize,
 ) {
     let node_id_text = node_id.0.clone();
+    crate::observability::record_actor_email(&actor_email);
+    crate::observability::record_node_id(&node_id_text);
+    crate::observability::record_session_id(&session_id.0);
+    info_span!(
+        "terminal.open",
+        actor_email = %actor_email,
+        node_id = %node_id_text,
+        session_id = %session_id.0,
+    )
+    .in_scope(|| info!("remote terminal open requested"));
     if !state.node_enrollment.node_is_online(&node_id_text) {
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
@@ -825,6 +880,12 @@ async fn handle_remote_terminal_socket(
             .agent_connections
             .connected_node_ids_except(&node_id_text),
     }) else {
+        info_span!(
+            "route.failed",
+            node_id = %node_id_text,
+            session_id = %session_id.0,
+        )
+        .in_scope(|| info!("no healthy route available"));
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
             actor_email: Some(actor_email),
@@ -843,9 +904,25 @@ async fn handle_remote_terminal_socket(
         .await;
         return;
     };
+    let route_id = route.route_id();
+    crate::observability::record_route_id(&route_id);
+    info_span!(
+        "route.selected",
+        node_id = %node_id_text,
+        session_id = %session_id.0,
+        route_id = %route_id,
+    )
+    .in_scope(|| info!("terminal route selected"));
 
     let NodeRoute::DirectAgent { .. } = &route else {
         state.node_router.record_failure(&route);
+        info_span!(
+            "route.failed",
+            node_id = %node_id_text,
+            session_id = %session_id.0,
+            route_id = %route_id,
+        )
+        .in_scope(|| info!("selected route is not executable"));
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
             actor_email: Some(actor_email),
@@ -869,6 +946,13 @@ async fn handle_remote_terminal_socket(
 
     let Some(connection) = state.agent_connections.connection(&node_id_text) else {
         state.node_router.record_failure(&route);
+        info_span!(
+            "route.failed",
+            node_id = %node_id_text,
+            session_id = %session_id.0,
+            route_id = %route_id,
+        )
+        .in_scope(|| info!("selected route has no active agent connection"));
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
             actor_email: Some(actor_email),
@@ -899,6 +983,13 @@ async fn handle_remote_terminal_socket(
     {
         state.agent_connections.disconnect(&node_id_text);
         state.node_router.record_failure(&route);
+        info_span!(
+            "route.failed",
+            node_id = %node_id_text,
+            session_id = %session_id.0,
+            route_id = %route_id,
+        )
+        .in_scope(|| info!("selected route dropped before terminal start"));
         let _ = send_server_message(
             &mut socket,
             TerminalServerMessage::Error {
@@ -951,6 +1042,7 @@ async fn handle_remote_terminal_socket(
             return;
         }
     };
+    crate::observability::record_transport_id(&connection.transport_id.0);
 
     state.node_router.record_success(&route);
 
@@ -1097,6 +1189,12 @@ async fn handle_remote_client_frame(
             state
                 .sessions
                 .set_state(active_session_id, TerminalSessionState::Terminating);
+            info_span!(
+                "terminal.terminate",
+                actor_email = %actor_email,
+                session_id = %active_session_id.0,
+            )
+            .in_scope(|| info!("remote terminal terminate requested"));
             state.audit.record(AuditEventInput {
                 kind: AuditEventKind::TerminalTerminated,
                 actor_email: Some(actor_email.to_owned()),
@@ -1355,6 +1453,12 @@ async fn handle_client_frame(
                 return true;
             }
             registry.set_state(active_session_id, TerminalSessionState::Terminating);
+            info_span!(
+                "terminal.terminate",
+                actor_email = %actor_email,
+                session_id = %active_session_id.0,
+            )
+            .in_scope(|| info!("local terminal terminate requested"));
             audit.record(AuditEventInput {
                 kind: AuditEventKind::TerminalTerminated,
                 actor_email: Some(actor_email.to_owned()),

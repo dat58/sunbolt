@@ -46,6 +46,7 @@ pub(crate) async fn create_enrollment_token(
     Extension(user): Extension<AuthenticatedUser>,
     Json(request): Json<EnrollmentTokenRequest>,
 ) -> impl IntoResponse {
+    crate::observability::record_actor_email(&user.0.email);
     let ttl = Duration::from_secs(request.expires_in_secs.unwrap_or(15 * 60).max(60));
     Json(state.node_enrollment.create_token(&user.0, ttl))
 }
@@ -60,6 +61,7 @@ pub(crate) async fn node_details(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
 ) -> impl IntoResponse {
+    crate::observability::record_node_id(&node_id);
     match state.node_enrollment.node_details(&node_id) {
         Some(node) => Json(NodeDetailsResponse { node }).into_response(),
         None => (
@@ -77,6 +79,8 @@ pub(crate) async fn rotate_node_credential(
     Extension(user): Extension<AuthenticatedUser>,
     Path(node_id): Path<String>,
 ) -> impl IntoResponse {
+    crate::observability::record_actor_email(&user.0.email);
+    crate::observability::record_node_id(&node_id);
     match state
         .auth
         .user_has_node_permission(&user.0, &node_id, Permission::NODE_CREDENTIAL_ROTATE)
@@ -143,6 +147,8 @@ pub(crate) async fn revoke_node(
     Extension(user): Extension<AuthenticatedUser>,
     Path(node_id): Path<String>,
 ) -> impl IntoResponse {
+    crate::observability::record_actor_email(&user.0.email);
+    crate::observability::record_node_id(&node_id);
     match state.node_enrollment.revoke_node(&node_id) {
         Ok(node) => {
             let closed = state.sessions.close_sessions_for_node(&node_id);

@@ -19,6 +19,7 @@ use crate::{
     auth::require_auth_middleware,
     config::RuntimeMode,
     error::{ErrorResponse, StartupError},
+    observability::{make_request_span, request_id_middleware, REQUEST_ID_HEADER},
     security,
     state::AppState,
     terminal::{
@@ -152,7 +153,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
         )
         .layer(origin_layer)
         .layer(from_fn(security_headers_middleware))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
+        .layer(from_fn(request_id_middleware))
         .with_state(state)
 }
 
@@ -229,7 +231,11 @@ fn apply_cors_headers(headers: &mut HeaderMap, origin: &str) {
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("content-type"),
+        HeaderValue::from_static("content-type, x-request-id"),
+    );
+    headers.insert(
+        HeaderName::from_static("access-control-expose-headers"),
+        HeaderValue::from_static(REQUEST_ID_HEADER),
     );
     headers.append(header::VARY, HeaderValue::from_static("Origin"));
 }

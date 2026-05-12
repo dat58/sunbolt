@@ -31,7 +31,7 @@ use tokio::{
     sync::{mpsc, Mutex as AsyncMutex},
     time::{self, Instant},
 };
-use tracing::{info, warn};
+use tracing::{info, info_span, warn};
 
 use crate::{
     error::{AgentTransportConnectionError, NodeConnectionError},
@@ -323,6 +323,8 @@ pub(crate) async fn agent_transport_long_poll(
 ) -> impl IntoResponse {
     let failed_node_id = request.client_hello.node_id.clone();
     let failed_transport_id = request.client_hello.transport_id.clone();
+    crate::observability::record_node_id(&failed_node_id.0);
+    crate::observability::record_transport_id(&failed_transport_id.0);
     match handle_agent_transport_long_poll_request(&state, request).await {
         Ok(response) => Json(response).into_response(),
         Err(error) => {
@@ -374,6 +376,8 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
     };
     let failed_node_id = first_envelope.node_id.clone();
     let failed_transport_id = first_envelope.transport_id.clone();
+    crate::observability::record_node_id(&failed_node_id.0);
+    crate::observability::record_transport_id(&failed_transport_id.0);
     let handshake = match negotiate_transport(&state, first_envelope) {
         Ok(handshake) => handshake,
         Err(error) => {
@@ -397,6 +401,15 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
 
     let node_id_text = handshake.node_id.0.clone();
     let transport_id_text = handshake.transport_id.0.clone();
+    crate::observability::record_node_id(&node_id_text);
+    crate::observability::record_transport_id(&transport_id_text);
+    info_span!(
+        "agent.transport.negotiated",
+        node_id = %node_id_text,
+        transport_id = %transport_id_text,
+        transport_kind = ?handshake.selected_transport,
+    )
+    .in_scope(|| info!("agent transport negotiated"));
     let (command_tx, mut command_rx) = mpsc::channel(AGENT_TRANSPORT_CHANNEL_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel(AGENT_TRANSPORT_CHANNEL_CAPACITY);
     let registration = state.agent_connections.register_transport(
@@ -407,6 +420,12 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
         event_rx,
     );
     if registration == AgentConnectionRegistration::ReplacedExisting {
+        info_span!(
+            "agent.reconnect",
+            node_id = %node_id_text,
+            transport_id = %transport_id_text,
+        )
+        .in_scope(|| info!("agent transport replaced existing connection"));
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::AgentDisconnected,
             actor_email: None,
@@ -434,6 +453,13 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
         transport_id = %transport_id_text,
         "agent transport connected"
     );
+    info_span!(
+        "agent.connect",
+        node_id = %node_id_text,
+        transport_id = %transport_id_text,
+        transport_kind = ?handshake.selected_transport,
+    )
+    .in_scope(|| info!("agent connected"));
 
     if send_transport_envelope(
         &mut socket,
@@ -564,6 +590,13 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
         reason = %disconnect_reason,
         "agent transport disconnected"
     );
+    info_span!(
+        "agent.disconnect",
+        node_id = %node_id_text,
+        transport_id = %transport_id_text,
+        reason = %disconnect_reason,
+    )
+    .in_scope(|| warn!("agent disconnected"));
 }
 
 #[derive(Debug, Clone)]
@@ -665,6 +698,15 @@ async fn handle_agent_transport_long_poll_request(
         AgentTransportKind::LongPollHttps,
     )?;
     let node_id_text = handshake.node_id.0.clone();
+    crate::observability::record_node_id(&node_id_text);
+    crate::observability::record_transport_id(&handshake.transport_id.0);
+    info_span!(
+        "agent.transport.negotiated",
+        node_id = %node_id_text,
+        transport_id = %handshake.transport_id.0,
+        transport_kind = ?handshake.selected_transport,
+    )
+    .in_scope(|| info!("agent long-poll transport negotiated"));
     let (registration, connection) = state
         .agent_connections
         .ensure_long_poll_transport(node_id_text.clone(), handshake.transport_id.clone());
@@ -729,6 +771,12 @@ fn record_long_poll_registration(
         AgentConnectionRegistration::Existing => {}
         AgentConnectionRegistration::Registered | AgentConnectionRegistration::ReplacedExisting => {
             if registration == AgentConnectionRegistration::ReplacedExisting {
+                info_span!(
+                    "agent.reconnect",
+                    node_id = %node_id_text,
+                    transport_id = %transport_id_text,
+                )
+                .in_scope(|| info!("agent long-poll transport replaced existing connection"));
                 audit.record(AuditEventInput {
                     kind: AuditEventKind::AgentDisconnected,
                     actor_email: None,
@@ -757,6 +805,13 @@ fn record_long_poll_registration(
                 transport_id = %transport_id_text,
                 "agent long-poll transport connected"
             );
+            info_span!(
+                "agent.connect",
+                node_id = %node_id_text,
+                transport_id = %transport_id_text,
+                transport_kind = ?handshake.selected_transport,
+            )
+            .in_scope(|| info!("agent long-poll connected"));
         }
     }
 }
@@ -845,6 +900,8 @@ fn record_agent_transport_authentication_failure(
     transport_id: &AgentTransportId,
     error: AgentTransportConnectionError,
 ) {
+    crate::observability::record_node_id(&node_id.0);
+    crate::observability::record_transport_id(&transport_id.0);
     if !matches!(
         error,
         AgentTransportConnectionError::AuthenticationFailed
@@ -853,6 +910,13 @@ fn record_agent_transport_authentication_failure(
         return;
     }
 
+    info_span!(
+        "agent.transport.authentication_failed",
+        node_id = %node_id.0,
+        transport_id = %transport_id.0,
+        reason = agent_transport_authentication_failure_reason(error),
+    )
+    .in_scope(|| warn!("agent transport authentication failed"));
     state.audit.record(AuditEventInput {
         kind: AuditEventKind::AgentAuthenticationFailed,
         actor_email: None,

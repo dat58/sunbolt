@@ -389,16 +389,16 @@ Goal: make all major system interactions transparent and diagnosable.
 
 ## Structured Tracing
 
-- [ ] Add request ID generation or propagation.
-- [ ] Add tracing fields for `request_id`.
-- [ ] Add tracing fields for `actor_id` or `actor_email`.
-- [ ] Add tracing fields for `node_id`.
-- [ ] Add tracing fields for `session_id`.
-- [ ] Add tracing fields for `transport_id`.
-- [ ] Add tracing fields for `route_id` when routing exists.
-- [ ] Add spans for terminal open/detach/reattach/terminate.
-- [ ] Add spans for agent connect/disconnect/reconnect.
-- [ ] Add spans for transport negotiation.
+- [x] Add request ID generation or propagation.
+- [x] Add tracing fields for `request_id`.
+- [x] Add tracing fields for `actor_id` or `actor_email`.
+- [x] Add tracing fields for `node_id`.
+- [x] Add tracing fields for `session_id`.
+- [x] Add tracing fields for `transport_id`.
+- [x] Add tracing fields for `route_id` when routing exists.
+- [x] Add spans for terminal open/detach/reattach/terminate.
+- [x] Add spans for agent connect/disconnect/reconnect.
+- [x] Add spans for transport negotiation.
 
 ## Audit Taxonomy
 
