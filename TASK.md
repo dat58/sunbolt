@@ -402,17 +402,17 @@ Goal: make all major system interactions transparent and diagnosable.
 
 ## Audit Taxonomy
 
-- [ ] Add `terminal.detached`.
-- [ ] Add `terminal.reattached`.
-- [ ] Add `terminal.terminated`.
-- [ ] Add `agent.connected`.
-- [ ] Add `agent.disconnected`.
-- [ ] Add `agent.transport.negotiated`.
-- [ ] Add `node.credential.rotated`.
-- [ ] Add `route.selected`.
-- [ ] Add `route.failed`.
-- [ ] Document audit event schema.
-- [ ] Document which events are security audit events versus operational logs.
+- [x] Add `terminal.detached`.
+- [x] Add `terminal.reattached`.
+- [x] Add `terminal.terminated`.
+- [x] Add `agent.connected`.
+- [x] Add `agent.disconnected`.
+- [x] Add `agent.transport.negotiated`.
+- [x] Add `node.credential.rotated`.
+- [x] Add `route.selected`.
+- [x] Add `route.failed`.
+- [x] Document audit event schema.
+- [x] Document which events are security audit events versus operational logs.
 
 ## Secret Redaction
 

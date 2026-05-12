@@ -886,6 +886,14 @@ async fn handle_remote_terminal_socket(
             session_id = %session_id.0,
         )
         .in_scope(|| info!("no healthy route available"));
+        crate::audit::record_route_failed(
+            &state.audit,
+            &actor_email,
+            &node_id_text,
+            &session_id.0,
+            None,
+            "no healthy route is available",
+        );
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
             actor_email: Some(actor_email),
@@ -913,6 +921,13 @@ async fn handle_remote_terminal_socket(
         route_id = %route_id,
     )
     .in_scope(|| info!("terminal route selected"));
+    crate::audit::record_route_selected(
+        &state.audit,
+        &actor_email,
+        &node_id_text,
+        &session_id.0,
+        &route_id,
+    );
 
     let NodeRoute::DirectAgent { .. } = &route else {
         state.node_router.record_failure(&route);
@@ -923,6 +938,14 @@ async fn handle_remote_terminal_socket(
             route_id = %route_id,
         )
         .in_scope(|| info!("selected route is not executable"));
+        crate::audit::record_route_failed(
+            &state.audit,
+            &actor_email,
+            &node_id_text,
+            &session_id.0,
+            Some(&route_id),
+            "selected relay route is not executable for terminal streams",
+        );
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
             actor_email: Some(actor_email),
@@ -953,6 +976,14 @@ async fn handle_remote_terminal_socket(
             route_id = %route_id,
         )
         .in_scope(|| info!("selected route has no active agent connection"));
+        crate::audit::record_route_failed(
+            &state.audit,
+            &actor_email,
+            &node_id_text,
+            &session_id.0,
+            Some(&route_id),
+            "selected route has no active agent connection",
+        );
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
             actor_email: Some(actor_email),
@@ -990,6 +1021,14 @@ async fn handle_remote_terminal_socket(
             route_id = %route_id,
         )
         .in_scope(|| info!("selected route dropped before terminal start"));
+        crate::audit::record_route_failed(
+            &state.audit,
+            &actor_email,
+            &node_id_text,
+            &session_id.0,
+            Some(&route_id),
+            "selected route dropped before terminal start",
+        );
         let _ = send_server_message(
             &mut socket,
             TerminalServerMessage::Error {

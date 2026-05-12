@@ -436,7 +436,7 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
     }
 
     state.audit.record(AuditEventInput {
-        kind: AuditEventKind::TransportNegotiated,
+        kind: AuditEventKind::AgentTransportNegotiated,
         actor_email: None,
         message: format!(
             "agent transport {transport_id_text} negotiated for node {node_id_text} using {:?}",
@@ -786,7 +786,7 @@ fn record_long_poll_registration(
                 });
             }
             audit.record(AuditEventInput {
-                kind: AuditEventKind::TransportNegotiated,
+                kind: AuditEventKind::AgentTransportNegotiated,
                 actor_email: None,
                 message: format!(
                     "agent transport {transport_id_text} negotiated for node {node_id_text} using {:?}",

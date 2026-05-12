@@ -557,19 +557,19 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| event["kind"] == json!("UserLoginSuccess")),
+                .any(|event| event["kind"] == json!("user.login.success")),
             "expected login success event"
         );
         assert!(
             events
                 .iter()
-                .any(|event| event["kind"] == json!("UserLoginFailed")),
+                .any(|event| event["kind"] == json!("user.login.failed")),
             "expected login failed event"
         );
         assert!(
             events
                 .iter()
-                .any(|event| event["kind"] == json!("UserLogout")),
+                .any(|event| event["kind"] == json!("user.logout")),
             "expected logout event"
         );
     }
@@ -619,10 +619,10 @@ mod tests {
             .expect("events should be a list");
         assert!(events
             .iter()
-            .any(|event| event["kind"] == json!("UserMfaChallenge")));
+            .any(|event| event["kind"] == json!("user.mfa.challenge")));
         assert!(events
             .iter()
-            .any(|event| event["kind"] == json!("UserMfaSuccess")));
+            .any(|event| event["kind"] == json!("user.mfa.success")));
     }
 
     #[tokio::test]

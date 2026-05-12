@@ -218,7 +218,7 @@ mod tests {
         let json = log.export_json();
         assert!(json.contains("event_hash"));
         assert!(json.contains("previous_hash"));
-        assert!(json.contains("UserLoginSuccess"));
+        assert!(json.contains("user.login.success"));
         assert!(json.contains("login succeeded"));
     }
 

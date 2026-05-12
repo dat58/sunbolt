@@ -3,24 +3,46 @@ use serde::{Deserialize, Serialize};
 /// Stable audit event names reserved by the audit boundary.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AuditEventKind {
+    #[serde(rename = "user.login.success")]
     UserLoginSuccess,
+    #[serde(rename = "user.login.failed")]
     UserLoginFailed,
+    #[serde(rename = "user.logout")]
     UserLogout,
+    #[serde(rename = "user.mfa.challenge")]
     UserMfaChallenge,
+    #[serde(rename = "user.mfa.success")]
     UserMfaSuccess,
+    #[serde(rename = "terminal.opened")]
     TerminalOpened,
+    #[serde(rename = "terminal.detached")]
     TerminalDetached,
+    #[serde(rename = "terminal.reattached")]
     TerminalReattached,
+    #[serde(rename = "terminal.terminated")]
     TerminalTerminated,
+    #[serde(rename = "terminal.closed")]
     TerminalClosed,
+    #[serde(rename = "terminal.failed")]
     TerminalFailed,
-    TransportNegotiated,
+    #[serde(rename = "agent.transport.negotiated")]
+    AgentTransportNegotiated,
+    #[serde(rename = "agent.connected")]
     AgentConnected,
+    #[serde(rename = "agent.disconnected")]
     AgentDisconnected,
+    #[serde(rename = "agent.authentication.failed")]
     AgentAuthenticationFailed,
+    #[serde(rename = "node.enrolled")]
     NodeEnrolled,
+    #[serde(rename = "node.credential.rotated")]
     NodeCredentialRotated,
+    #[serde(rename = "node.revoked")]
     NodeRevoked,
+    #[serde(rename = "route.selected")]
+    RouteSelected,
+    #[serde(rename = "route.failed")]
+    RouteFailed,
 }
 
 impl AuditEventKind {
@@ -39,13 +61,15 @@ impl AuditEventKind {
             Self::TerminalTerminated => "terminal.terminated",
             Self::TerminalClosed => "terminal.closed",
             Self::TerminalFailed => "terminal.failed",
-            Self::TransportNegotiated => "transport.negotiated",
+            Self::AgentTransportNegotiated => "agent.transport.negotiated",
             Self::AgentConnected => "agent.connected",
             Self::AgentDisconnected => "agent.disconnected",
             Self::AgentAuthenticationFailed => "agent.authentication.failed",
             Self::NodeEnrolled => "node.enrolled",
             Self::NodeCredentialRotated => "node.credential.rotated",
             Self::NodeRevoked => "node.revoked",
+            Self::RouteSelected => "route.selected",
+            Self::RouteFailed => "route.failed",
         }
     }
 
@@ -65,6 +89,20 @@ impl AuditEventKind {
                 | Self::TerminalTerminated
                 | Self::TerminalClosed
                 | Self::TerminalFailed
+        )
+    }
+
+    /// Returns true when this event is expected in structured operational logs
+    /// rather than the user-facing access-history timeline.
+    #[must_use]
+    pub const fn is_operational(self) -> bool {
+        matches!(
+            self,
+            Self::AgentConnected
+                | Self::AgentDisconnected
+                | Self::AgentTransportNegotiated
+                | Self::RouteSelected
+                | Self::RouteFailed
         )
     }
 }
@@ -128,8 +166,8 @@ mod tests {
         assert_eq!(AuditEventKind::TerminalClosed.as_str(), "terminal.closed");
         assert_eq!(AuditEventKind::TerminalFailed.as_str(), "terminal.failed");
         assert_eq!(
-            AuditEventKind::TransportNegotiated.as_str(),
-            "transport.negotiated"
+            AuditEventKind::AgentTransportNegotiated.as_str(),
+            "agent.transport.negotiated"
         );
         assert_eq!(AuditEventKind::AgentConnected.as_str(), "agent.connected");
         assert_eq!(
@@ -146,6 +184,8 @@ mod tests {
             "node.credential.rotated"
         );
         assert_eq!(AuditEventKind::NodeRevoked.as_str(), "node.revoked");
+        assert_eq!(AuditEventKind::RouteSelected.as_str(), "route.selected");
+        assert_eq!(AuditEventKind::RouteFailed.as_str(), "route.failed");
     }
 
     #[test]
@@ -159,5 +199,16 @@ mod tests {
         assert!(!AuditEventKind::NodeEnrolled.is_access_history());
         assert!(!AuditEventKind::NodeCredentialRotated.is_access_history());
         assert!(!AuditEventKind::NodeRevoked.is_access_history());
+    }
+
+    #[test]
+    fn operational_kinds_are_agent_transport_and_route_events() {
+        assert!(AuditEventKind::AgentConnected.is_operational());
+        assert!(AuditEventKind::AgentDisconnected.is_operational());
+        assert!(AuditEventKind::AgentTransportNegotiated.is_operational());
+        assert!(AuditEventKind::RouteSelected.is_operational());
+        assert!(AuditEventKind::RouteFailed.is_operational());
+        assert!(!AuditEventKind::TerminalOpened.is_operational());
+        assert!(!AuditEventKind::NodeCredentialRotated.is_operational());
     }
 }
