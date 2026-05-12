@@ -58,43 +58,15 @@ pub fn is_cors_preflight(method: &Method, headers: &HeaderMap) -> bool {
         && headers.contains_key(header::ACCESS_CONTROL_REQUEST_METHOD)
 }
 
-/// Returns a copy of `text` with hex strings of 32 or more characters replaced
-/// by `[REDACTED]`, masking auth tokens and similar opaque secrets.
+/// Returns a copy of `text` with known secret material replaced by
+/// `[REDACTED]`, masking auth tokens, cookies, node credentials, recovery
+/// codes, passkey material, and similar opaque secrets.
 ///
 /// When no redaction is needed the original string slice is returned without
 /// any allocation.
 #[must_use]
 pub fn redact_sensitive(text: &str) -> Cow<'_, str> {
-    let bytes = text.as_bytes();
-    let mut result = String::new();
-    let mut last_end = 0;
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i].is_ascii_hexdigit() {
-            let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
-                i += 1;
-            }
-            if i - start >= 32 {
-                if result.is_empty() {
-                    result.reserve(text.len());
-                }
-                result.push_str(&text[last_end..start]);
-                result.push_str("[REDACTED]");
-                last_end = i;
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    if last_end == 0 {
-        Cow::Borrowed(text)
-    } else {
-        result.push_str(&text[last_end..]);
-        Cow::Owned(result)
-    }
+    sunbolt_audit::redact_sensitive(text)
 }
 
 pub(crate) fn random_token() -> String {
@@ -221,5 +193,14 @@ mod tests {
         let text = format!("first={t1} second={t2}");
         let redacted = redact_sensitive(&text);
         assert_eq!(redacted, "first=[REDACTED] second=[REDACTED]");
+    }
+
+    #[test]
+    fn redact_sensitive_masks_cookie_headers() {
+        let text = "Cookie: sunbolt_session=session-1; theme=dark";
+        let redacted = redact_sensitive(text);
+
+        assert_eq!(redacted, "Cookie: [REDACTED]");
+        assert!(!redacted.contains("session-1"));
     }
 }

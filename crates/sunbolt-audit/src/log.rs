@@ -5,6 +5,7 @@ use std::{
 
 use crate::chain::{compute_event_hash, verify_chain, GENESIS_HASH};
 use crate::export::export_json;
+use crate::redaction::redact_sensitive;
 use crate::types::{AuditEvent, AuditEventInput};
 
 /// Internal state kept under a single lock so that hash-chain writes are
@@ -60,11 +61,12 @@ impl AuditLog {
         state.next_id += 1;
 
         let previous_hash = state.last_hash.clone();
+        let message = redact_sensitive(&input.message).into_owned();
         let event_hash = compute_event_hash(
             id,
             input.kind.as_str(),
             input.actor_email.as_deref(),
-            &input.message,
+            &message,
             created_at,
             &previous_hash,
         );
@@ -73,7 +75,7 @@ impl AuditLog {
             id,
             kind: input.kind,
             actor_email: input.actor_email,
-            message: input.message,
+            message,
             created_at_unix_secs: created_at,
             previous_hash,
             event_hash,
@@ -229,5 +231,24 @@ mod tests {
         log.record(login_event());
 
         assert_eq!(log2.events().len(), 1);
+    }
+
+    #[test]
+    fn record_redacts_secret_material_before_storage_and_hashing() {
+        let log = AuditLog::default();
+        let token = "a".repeat(64);
+        log.record(AuditEventInput {
+            kind: AuditEventKind::NodeEnrolled,
+            actor_email: Some("admin@example.com".to_owned()),
+            message: format!("node enrolled with enrollment_token={token}"),
+        });
+
+        let events = log.events();
+        assert_eq!(
+            events[0].message,
+            "node enrolled with enrollment_token=[REDACTED]"
+        );
+        assert!(!events[0].message.contains(&token));
+        assert!(log.verify_integrity());
     }
 }

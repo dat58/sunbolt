@@ -416,13 +416,13 @@ Goal: make all major system interactions transparent and diagnosable.
 
 ## Secret Redaction
 
-- [ ] Review current redaction rules.
-- [ ] Redact cookies.
-- [ ] Redact enrollment tokens.
-- [ ] Redact node credentials.
-- [ ] Redact recovery codes.
-- [ ] Redact passkey credential material.
-- [ ] Add tests for redaction coverage.
+- [x] Review current redaction rules.
+- [x] Redact cookies.
+- [x] Redact enrollment tokens.
+- [x] Redact node credentials.
+- [x] Redact recovery codes.
+- [x] Redact passkey credential material.
+- [x] Add tests for redaction coverage.
 
 ---
 
