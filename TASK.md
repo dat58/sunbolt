@@ -346,22 +346,22 @@ Goal: redesign the UI into reusable pages and components that work across device
 
 ## Tablet
 
-- [ ] Add adaptive two-pane layout where width allows.
-- [ ] Add node list plus detail/terminal split view.
-- [ ] Compact terminal toolbar controls.
-- [ ] Ensure portrait and landscape layouts are usable.
+- [x] Add adaptive two-pane layout where width allows.
+- [x] Add node list plus detail/terminal split view.
+- [x] Compact terminal toolbar controls.
+- [x] Ensure portrait and landscape layouts are usable.
 
 ## Mobile
 
-- [ ] Add terminal-first full-screen mobile workspace.
-- [ ] Add bottom navigation or compact top navigation.
-- [ ] Add mobile session switcher.
-- [ ] Add node selector bottom sheet.
-- [ ] Add session actions bottom sheet.
-- [ ] Add mobile MFA/login layout that survives keyboard overlap.
-- [ ] Add mobile terminal accessory toolbar.
-- [ ] Include `Ctrl`, `Esc`, `Tab`, arrow keys, paste, reconnect, detach, and terminate controls.
-- [ ] Replace wide tables with dense list rows on mobile.
+- [x] Add terminal-first full-screen mobile workspace.
+- [x] Add bottom navigation or compact top navigation.
+- [x] Add mobile session switcher.
+- [x] Add node selector bottom sheet.
+- [x] Add session actions bottom sheet.
+- [x] Add mobile MFA/login layout that survives keyboard overlap.
+- [x] Add mobile terminal accessory toolbar.
+- [x] Include `Ctrl`, `Esc`, `Tab`, arrow keys, paste, reconnect, detach, and terminate controls.
+- [x] Replace wide tables with dense list rows on mobile.
 
 ## Required Viewport Validation
 

@@ -42,6 +42,17 @@ pub fn terminal_bridge_script() -> String {
   const mfaButton = document.getElementById("sunbolt-terminal-mfa");
   const reconnectButton = document.getElementById("sunbolt-terminal-reconnect");
   const retryButton = document.getElementById("sunbolt-terminal-retry");
+  const mobileCtrlButton = document.getElementById("sunbolt-mobile-key-ctrl");
+  const mobileEscButton = document.getElementById("sunbolt-mobile-key-esc");
+  const mobileTabButton = document.getElementById("sunbolt-mobile-key-tab");
+  const mobileUpButton = document.getElementById("sunbolt-mobile-key-up");
+  const mobileLeftButton = document.getElementById("sunbolt-mobile-key-left");
+  const mobileDownButton = document.getElementById("sunbolt-mobile-key-down");
+  const mobileRightButton = document.getElementById("sunbolt-mobile-key-right");
+  const mobilePasteButton = document.getElementById("sunbolt-mobile-key-paste");
+  const mobileReconnectButton = document.getElementById("sunbolt-mobile-action-reconnect");
+  const mobileDetachButton = document.getElementById("sunbolt-mobile-action-detach");
+  const mobileTerminateButton = document.getElementById("sunbolt-mobile-action-terminate");
   const nodeInput = document.getElementById("{node_input_id}");
   const tabList = document.getElementById("sunbolt-terminal-tabs");
   const detachedList = document.getElementById("sunbolt-terminal-detached-sessions");
@@ -64,6 +75,7 @@ pub fn terminal_bridge_script() -> String {
   let authenticated = false;
   let loginBusy = false;
   let currentStatusState = "idle";
+  let mobileCtrlActive = false;
   const workspaceStorageKey = "sunbolt.terminal.workspace.v1";
   const activeSessions = new Map();
 
@@ -158,6 +170,20 @@ pub fn terminal_bridge_script() -> String {
       reconnectButton.disabled = !(
         currentStatusState === "disconnected" && sessionId && reconnectToken
       );
+    }}
+    if (mobileReconnectButton) {{
+      mobileReconnectButton.disabled = !(
+        currentStatusState === "disconnected" && sessionId && reconnectToken
+      );
+    }}
+    if (mobileDetachButton) {{
+      mobileDetachButton.disabled = !authenticated || !sessionId || currentStatusState === "idle";
+    }}
+    if (mobileTerminateButton) {{
+      mobileTerminateButton.disabled = !authenticated
+        || currentStatusState === "idle"
+        || currentStatusState === "closed"
+        || currentStatusState === "disconnected";
     }}
     if (retryButton) {{
       retryButton.disabled = loginBusy
@@ -628,7 +654,50 @@ pub fn terminal_bridge_script() -> String {
     if (!sessionId) {{
       return;
     }}
-    send({{ type: "input", session_id: sessionId, data: terminalData(data) }});
+    const safeData = terminalData(data);
+    if (mobileCtrlActive && /^[a-zA-Z]$/.test(safeData)) {{
+      setMobileCtrl(false);
+      send({{
+        type: "input",
+        session_id: sessionId,
+        data: String.fromCharCode(safeData.toUpperCase().charCodeAt(0) - 64)
+      }});
+      return;
+    }}
+    send({{ type: "input", session_id: sessionId, data: safeData }});
+  }};
+
+  const setMobileCtrl = (active) => {{
+    mobileCtrlActive = active;
+    if (mobileCtrlButton) {{
+      mobileCtrlButton.dataset.active = active ? "true" : "false";
+      mobileCtrlButton.setAttribute("aria-pressed", active ? "true" : "false");
+    }}
+  }};
+
+  const sendMobileKey = (data) => {{
+    sendInput(data);
+    setMobileCtrl(false);
+    if (terminal) {{
+      terminal.focus();
+    }} else if (fallbackInput) {{
+      fallbackInput.focus();
+    }}
+  }};
+
+  const sendMobilePaste = async () => {{
+    try {{
+      if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") {{
+        setError("Clipboard paste is not available in this browser context.");
+        return;
+      }}
+      const text = await navigator.clipboard.readText();
+      if (text) {{
+        sendMobileKey(text);
+      }}
+    }} catch (_error) {{
+      setError("Unable to read from the clipboard.");
+    }}
   }};
 
   const closeTerminal = () => {{
@@ -843,6 +912,47 @@ pub fn terminal_bridge_script() -> String {
     retryButton.addEventListener("click", () => {{
       connect();
     }});
+  }}
+  if (mobileCtrlButton) {{
+    mobileCtrlButton.addEventListener("click", () => {{
+      setMobileCtrl(!mobileCtrlActive);
+    }});
+  }}
+  if (mobileEscButton) {{
+    mobileEscButton.addEventListener("click", () => sendMobileKey("\x1b"));
+  }}
+  if (mobileTabButton) {{
+    mobileTabButton.addEventListener("click", () => sendMobileKey("\t"));
+  }}
+  if (mobileUpButton) {{
+    mobileUpButton.addEventListener("click", () => sendMobileKey("\x1b[A"));
+  }}
+  if (mobileLeftButton) {{
+    mobileLeftButton.addEventListener("click", () => sendMobileKey("\x1b[D"));
+  }}
+  if (mobileDownButton) {{
+    mobileDownButton.addEventListener("click", () => sendMobileKey("\x1b[B"));
+  }}
+  if (mobileRightButton) {{
+    mobileRightButton.addEventListener("click", () => sendMobileKey("\x1b[C"));
+  }}
+  if (mobilePasteButton) {{
+    mobilePasteButton.addEventListener("click", sendMobilePaste);
+  }}
+  if (mobileReconnectButton) {{
+    mobileReconnectButton.addEventListener("click", () => {{
+      if (!sessionId || !reconnectToken) {{
+        return;
+      }}
+      setStatus("Reconnecting", "connecting");
+      connect(true);
+    }});
+  }}
+  if (mobileDetachButton) {{
+    mobileDetachButton.addEventListener("click", detachTerminal);
+  }}
+  if (mobileTerminateButton) {{
+    mobileTerminateButton.addEventListener("click", closeTerminal);
   }}
   window.addEventListener("beforeunload", cleanupTerminal);
   window.addEventListener("pagehide", cleanupTerminal);

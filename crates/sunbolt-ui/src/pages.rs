@@ -90,6 +90,19 @@ pub fn DashboardPage() -> Element {
                         }
                     }
                     div {
+                        class: table_list::MOBILE_LIST,
+                        MobileRecord {
+                            eyebrow: "active",
+                            title: "term-84f2a9",
+                            detail: "local - admin@example.com - just now"
+                        }
+                        MobileRecord {
+                            eyebrow: "degraded",
+                            title: "term-d19344",
+                            detail: "node-1 - admin@example.com - 2 min ago"
+                        }
+                    }
+                    div {
                         class: table_list::TABLE_WRAP,
                         table {
                             class: table_list::TABLE,
@@ -186,63 +199,93 @@ pub fn TerminalPageBody() -> Element {
                 }
                 div {
                     class: "sunbolt-terminal-controls",
-                    input {
-                        id: TERMINAL_NODE_INPUT_ID,
-                        class: form::TEXT_INPUT,
-                        placeholder: "node id, empty for local",
-                        value: ""
+                    details {
+                        class: "sunbolt-node-selector-sheet",
+                        summary {
+                            class: button_class(ButtonVariant::Secondary),
+                            "Node"
+                        }
+                        div {
+                            class: "sunbolt-bottom-sheet-panel",
+                            label {
+                                class: "sunbolt-sheet-label",
+                                "Target node"
+                            }
+                            input {
+                                id: TERMINAL_NODE_INPUT_ID,
+                                class: form::TEXT_INPUT,
+                                placeholder: "node id, empty for local",
+                                value: ""
+                            }
+                        }
                     }
                     div {
                         id: TERMINAL_STATUS_ID,
                         class: status_badge_class(StatusTone::Connecting),
                         "Connecting"
                     }
-                    button {
-                        id: "sunbolt-terminal-mfa",
-                        class: button_class(ButtonVariant::Primary),
-                        "Step-up MFA"
-                    }
-                    button {
-                        id: "sunbolt-terminal-new",
-                        class: button_class(ButtonVariant::Secondary),
-                        "New"
-                    }
-                    button {
-                        id: "sunbolt-terminal-detach",
-                        class: button_class(ButtonVariant::Secondary),
-                        "Detach"
-                    }
-                    button {
-                        id: "sunbolt-terminal-close-tab",
-                        class: button_class(ButtonVariant::Secondary),
-                        "Close Tab"
-                    }
-                    button {
-                        id: "sunbolt-terminal-reconnect",
-                        class: button_class(ButtonVariant::Secondary),
-                        disabled: true,
-                        "Reconnect"
-                    }
-                    button {
-                        id: "sunbolt-terminal-retry",
-                        class: button_class(ButtonVariant::Secondary),
-                        "Retry"
-                    }
-                    button {
-                        id: "sunbolt-terminal-close",
-                        class: button_class(ButtonVariant::Danger),
-                        "Terminate"
+                    details {
+                        class: "sunbolt-session-actions-sheet",
+                        summary {
+                            class: button_class(ButtonVariant::Primary),
+                            "Actions"
+                        }
+                        div {
+                            class: "sunbolt-bottom-sheet-panel",
+                            div {
+                                class: "sunbolt-bottom-sheet-actions",
+                                button {
+                                    id: "sunbolt-terminal-mfa",
+                                    class: button_class(ButtonVariant::Primary),
+                                    "Step-up MFA"
+                                }
+                                button {
+                                    id: "sunbolt-terminal-new",
+                                    class: button_class(ButtonVariant::Secondary),
+                                    "New"
+                                }
+                                button {
+                                    id: "sunbolt-terminal-detach",
+                                    class: button_class(ButtonVariant::Secondary),
+                                    "Detach"
+                                }
+                                button {
+                                    id: "sunbolt-terminal-close-tab",
+                                    class: button_class(ButtonVariant::Secondary),
+                                    "Close Tab"
+                                }
+                                button {
+                                    id: "sunbolt-terminal-reconnect",
+                                    class: button_class(ButtonVariant::Secondary),
+                                    disabled: true,
+                                    "Reconnect"
+                                }
+                                button {
+                                    id: "sunbolt-terminal-retry",
+                                    class: button_class(ButtonVariant::Secondary),
+                                    "Retry"
+                                }
+                                button {
+                                    id: "sunbolt-terminal-close",
+                                    class: button_class(ButtonVariant::Danger),
+                                    "Terminate"
+                                }
+                            }
+                        }
                     }
                 }
             }
             div {
-                id: TERMINAL_TABS_ID,
-                class: "sunbolt-terminal-tabs",
-                role: "tablist"
-            }
-            div {
-                id: TERMINAL_DETACHED_SESSIONS_ID,
-                class: "sunbolt-detached-sessions"
+                class: "sunbolt-session-switcher",
+                div {
+                    id: TERMINAL_TABS_ID,
+                    class: "sunbolt-terminal-tabs",
+                    role: "tablist"
+                }
+                div {
+                    id: TERMINAL_DETACHED_SESSIONS_ID,
+                    class: "sunbolt-detached-sessions"
+                }
             }
             div {
                 id: TERMINAL_ERROR_ID,
@@ -283,13 +326,44 @@ pub fn TerminalPageBody() -> Element {
                 }
             }
             div {
-                id: TERMINAL_MOUNT_ID,
-                class: "sunbolt-terminal-body",
-                tabindex: "0",
-                role: "application",
-                "aria-label": "Terminal viewport",
-                "data-ws-endpoint": TERMINAL_WS_ENDPOINT,
-                "Terminal loading"
+                class: "sunbolt-terminal-workspace-grid",
+                aside {
+                    class: "sunbolt-tablet-node-pane",
+                    div {
+                        class: "sunbolt-tablet-node-list",
+                        button { class: "sunbolt-tablet-node-row sunbolt-tablet-node-row-active", "local" }
+                        button { class: "sunbolt-tablet-node-row", "node-1" }
+                    }
+                    div {
+                        class: "sunbolt-tablet-node-detail",
+                        p { class: "m-0 text-xs font-semibold text-terminal-text", "Selected node" }
+                        p { class: "m-0 text-xs text-terminal-muted", "Use the terminal pane to connect, detach, reattach, or terminate." }
+                    }
+                }
+                div {
+                    id: TERMINAL_MOUNT_ID,
+                    class: "sunbolt-terminal-body",
+                    tabindex: "0",
+                    role: "application",
+                    "aria-label": "Terminal viewport",
+                    "data-ws-endpoint": TERMINAL_WS_ENDPOINT,
+                    "Terminal loading"
+                }
+            }
+            div {
+                class: "sunbolt-mobile-accessory-toolbar",
+                "aria-label": "Mobile terminal accessory controls",
+                button { id: "sunbolt-mobile-key-ctrl", r#type: "button", "Ctrl" }
+                button { id: "sunbolt-mobile-key-esc", r#type: "button", "Esc" }
+                button { id: "sunbolt-mobile-key-tab", r#type: "button", "Tab" }
+                button { id: "sunbolt-mobile-key-up", r#type: "button", "Up" }
+                button { id: "sunbolt-mobile-key-left", r#type: "button", "Left" }
+                button { id: "sunbolt-mobile-key-down", r#type: "button", "Down" }
+                button { id: "sunbolt-mobile-key-right", r#type: "button", "Right" }
+                button { id: "sunbolt-mobile-key-paste", r#type: "button", "Paste" }
+                button { id: "sunbolt-mobile-action-reconnect", r#type: "button", "Reconnect" }
+                button { id: "sunbolt-mobile-action-detach", r#type: "button", "Detach" }
+                button { id: "sunbolt-mobile-action-terminate", r#type: "button", "Terminate" }
             }
         }
     }
@@ -332,6 +406,14 @@ pub fn AccessHistoryPage() -> Element {
             }
             div {
                 class: layout::CARD,
+                div {
+                    class: table_list::MOBILE_LIST,
+                    MobileRecord {
+                        eyebrow: "user.login.success",
+                        title: "admin@example.com",
+                        detail: "Pending - Awaiting backend list wiring"
+                    }
+                }
                 div {
                     class: table_list::TABLE_WRAP,
                     table {
@@ -398,6 +480,14 @@ pub fn AuditLogPage() -> Element {
             }
             div {
                 class: layout::CARD,
+                div {
+                    class: table_list::MOBILE_LIST,
+                    MobileRecord {
+                        eyebrow: "terminal.opened",
+                        title: "admin@example.com",
+                        detail: "Pending - Awaiting backend list wiring"
+                    }
+                }
                 div {
                     class: table_list::TABLE_WRAP,
                     table {
@@ -499,6 +589,14 @@ pub fn NodesPage() -> Element {
                     }
                 }
                 div {
+                    class: table_list::MOBILE_LIST,
+                    MobileRecord {
+                        eyebrow: "online",
+                        title: "node-1",
+                        detail: "host-a - linux - 30 sec ago"
+                    }
+                }
+                div {
                     class: table_list::TABLE_WRAP,
                     table {
                         class: table_list::TABLE,
@@ -570,6 +668,14 @@ pub fn SecurityPage() -> Element {
                     button {
                         class: button_class(ButtonVariant::Primary),
                         "Add passkey"
+                    }
+                }
+                div {
+                    class: table_list::MOBILE_LIST,
+                    MobileRecord {
+                        eyebrow: "enabled",
+                        title: "Laptop passkey",
+                        detail: "credential-1"
                     }
                 }
                 div {
@@ -675,6 +781,14 @@ pub fn AdminPage() -> Element {
                         }
                     }
                 }
+                div {
+                    class: table_list::MOBILE_LIST,
+                    MobileRecord {
+                        eyebrow: "Admin",
+                        title: "admin@example.com",
+                        detail: "Operations"
+                    }
+                }
             }
         }
     }
@@ -692,6 +806,16 @@ fn AdminTable(
             h2 {
                 class: "mb-3 mt-0 text-lg font-black tracking-tight text-terminal-text",
                 "{title}"
+            }
+            div {
+                class: table_list::MOBILE_LIST,
+                for row in rows.clone() {
+                    MobileRecord {
+                        eyebrow: row.first().copied().unwrap_or("Record"),
+                        title: row.get(1).copied().unwrap_or("Pending"),
+                        detail: row.get(2).copied().unwrap_or("Awaiting data")
+                    }
+                }
             }
             div {
                 class: table_list::TABLE_WRAP,
@@ -714,6 +838,27 @@ fn AdminTable(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+#[component]
+fn MobileRecord(eyebrow: &'static str, title: &'static str, detail: &'static str) -> Element {
+    rsx! {
+        div {
+            class: table_list::MOBILE_RECORD,
+            p {
+                class: "m-0 text-xs font-semibold text-lightning-cyan",
+                "{eyebrow}"
+            }
+            p {
+                class: "m-0 text-sm font-semibold text-terminal-text",
+                "{title}"
+            }
+            p {
+                class: "m-0 text-xs text-terminal-muted",
+                "{detail}"
             }
         }
     }

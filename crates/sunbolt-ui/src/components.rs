@@ -20,6 +20,8 @@ pub mod table_list {
     pub const PAGINATION: &str = "sunbolt-pagination";
     pub const DENSE_LIST: &str = "sunbolt-dense-list";
     pub const DENSE_ROW: &str = "sunbolt-dense-row";
+    pub const MOBILE_LIST: &str = "sunbolt-mobile-record-list";
+    pub const MOBILE_RECORD: &str = "sunbolt-mobile-record";
 }
 
 pub mod form {
