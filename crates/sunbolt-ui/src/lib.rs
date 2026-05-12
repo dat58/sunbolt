@@ -4,6 +4,7 @@ pub mod components;
 mod pages;
 pub mod shell;
 pub mod terminal_workspace;
+pub mod viewport_validation;
 
 pub use api_client::{
     AUTH_LOGIN_ENDPOINT, AUTH_ME_ENDPOINT, AUTH_TERMINAL_ACCESS_ENDPOINT,
@@ -32,6 +33,12 @@ mod tests {
     use crate::terminal_workspace::{
         TerminalWorkspacePanel, TerminalWorkspaceState, TERMINAL_MOUNT_ID, TERMINAL_NODE_INPUT_ID,
     };
+    use crate::viewport_validation::{
+        required_viewport, TerminalLayoutExpectation, ViewportClass, REQUIRED_VIEWPORTS,
+        REQUIRED_VIEWPORT_VALIDATION_CHECKS,
+    };
+
+    const TAILWIND_CSS: &str = include_str!("../styles/tailwind.css");
 
     #[test]
     fn app_title_uses_product_name() {
@@ -219,5 +226,155 @@ mod tests {
         assert!(script.contains(r#"type: "terminate""#));
         assert!(script.contains("pagehide"));
         assert!(script.contains("beforeunload"));
+    }
+
+    #[test]
+    fn required_viewports_match_phase_8_7_baseline() {
+        let expected = [
+            ("iPhone 11 Pro", (375, 812), ViewportClass::Mobile),
+            (
+                "iPad 11 Pro portrait",
+                (834, 1194),
+                ViewportClass::TabletPortrait,
+            ),
+            (
+                "iPad 11 Pro landscape",
+                (1194, 834),
+                ViewportClass::TabletLandscape,
+            ),
+            ("Laptop", (1366, 768), ViewportClass::Laptop),
+            ("Desktop", (1920, 1080), ViewportClass::Desktop),
+        ];
+
+        assert_eq!(REQUIRED_VIEWPORTS.len(), expected.len());
+        for (index, (label, dimensions, class)) in expected.iter().enumerate() {
+            let viewport = REQUIRED_VIEWPORTS[index];
+            assert_eq!(viewport.label, *label);
+            assert_eq!(viewport.dimensions(), *dimensions);
+            assert_eq!(viewport.class, *class);
+            assert_eq!(
+                ViewportClass::from_size(viewport.width, viewport.height),
+                *class
+            );
+            assert_eq!(required_viewport(label), Some(viewport));
+        }
+    }
+
+    #[test]
+    fn viewport_validation_covers_every_required_check() {
+        assert_eq!(REQUIRED_VIEWPORT_VALIDATION_CHECKS.len(), 7);
+        for viewport in REQUIRED_VIEWPORTS {
+            assert!(!viewport.label.is_empty());
+            assert!(
+                REQUIRED_VIEWPORT_VALIDATION_CHECKS
+                    .iter()
+                    .all(|check| matches!(
+                        check,
+                        crate::viewport_validation::ViewportValidationCheck::Navigation
+                            | crate::viewport_validation::ViewportValidationCheck::TerminalUsability
+                            | crate::viewport_validation::ViewportValidationCheck::SessionSwitching
+                            | crate::viewport_validation::ViewportValidationCheck::NoTextOrControlOverlap
+                            | crate::viewport_validation::ViewportValidationCheck::LoginFlow
+                            | crate::viewport_validation::ViewportValidationCheck::MfaFlow
+                            | crate::viewport_validation::ViewportValidationCheck::TerminalLifecycleSemantics
+                    ))
+            );
+        }
+    }
+
+    #[test]
+    fn mobile_viewport_validation_has_terminal_first_controls() {
+        let mobile = required_viewport("iPhone 11 Pro").expect("mobile viewport should exist");
+
+        assert_eq!(
+            mobile.class.expected_terminal_layout(),
+            TerminalLayoutExpectation::MobileTerminalFirst
+        );
+        assert!(TAILWIND_CSS.contains("@media (max-width: 767px)"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-nav"));
+        assert!(TAILWIND_CSS.contains("@apply fixed inset-x-0 bottom-0"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-terminal-page"));
+        assert!(TAILWIND_CSS.contains("min-height: 16rem"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-terminal-controls"));
+        assert!(TAILWIND_CSS.contains("@apply flex-nowrap overflow-x-auto"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-node-selector-sheet"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-session-actions-sheet"));
+        assert!(TAILWIND_CSS.contains("max-height: 45dvh"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-mobile-accessory-toolbar"));
+        assert!(TAILWIND_CSS
+            .contains("@apply fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+3.25rem)]"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-table-wrap"));
+        assert!(TAILWIND_CSS.contains("@apply hidden"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-mobile-record-list"));
+        assert_eq!(mobile.dimensions(), (375, 812));
+    }
+
+    #[test]
+    fn tablet_viewport_validation_has_two_pane_terminal_layout() {
+        for label in ["iPad 11 Pro portrait", "iPad 11 Pro landscape"] {
+            let viewport = required_viewport(label).expect("tablet viewport should exist");
+
+            assert_eq!(
+                viewport.class.expected_terminal_layout(),
+                TerminalLayoutExpectation::TabletTwoPane
+            );
+        }
+
+        assert!(TAILWIND_CSS.contains("@media (min-width: 768px) and (max-width: 1199px)"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-terminal-workspace-grid"));
+        assert!(TAILWIND_CSS.contains("@apply grid-cols-[15rem_minmax(0,1fr)]"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-tablet-node-pane"));
+        assert!(TAILWIND_CSS.contains("@apply grid content-start gap-3"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-session-switcher"));
+        assert!(TAILWIND_CSS.contains("@apply grid-cols-2 items-center"));
+    }
+
+    #[test]
+    fn laptop_and_desktop_validation_keep_dense_control_plane_layout() {
+        for label in ["Laptop", "Desktop"] {
+            let viewport = required_viewport(label).expect("desktop-class viewport should exist");
+
+            assert_eq!(
+                viewport.class.expected_terminal_layout(),
+                TerminalLayoutExpectation::DenseControlPlane
+            );
+        }
+
+        assert!(TAILWIND_CSS.contains("@media (min-width: 1024px)"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-topbar"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-nav"));
+        assert!(TAILWIND_CSS.contains("@apply flex max-w-full gap-2 overflow-x-auto pb-1 md:flex-wrap md:justify-end md:overflow-visible"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-dashboard-grid"));
+        assert!(TAILWIND_CSS.contains("xl:grid-cols-4"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-dashboard-main"));
+        assert!(TAILWIND_CSS.contains("xl:grid-cols-[minmax(0,2fr)_minmax(20rem,0.8fr)]"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-table"));
+        assert!(TAILWIND_CSS.contains("@apply w-full min-w-[720px]"));
+        assert!(TAILWIND_CSS.contains(".sunbolt-terminal-page"));
+        assert!(TAILWIND_CSS.contains("height: 100%"));
+    }
+
+    #[test]
+    fn viewport_validation_exercises_auth_mfa_session_and_lifecycle_controls() {
+        let script = terminal_bridge_script();
+
+        assert!(script.contains("ensureAuthenticatedSession"));
+        assert!(script.contains("ensureTerminalAccess"));
+        assert!(script.contains("setAuthVisible(true)"));
+        assert!(script.contains("loginButton.addEventListener"));
+        assert!(script.contains("completeStepUpMfa"));
+        assert!(script.contains("mfaButton.addEventListener"));
+        assert!(script.contains("renderTabs"));
+        assert!(script.contains("renderDetachedSessions"));
+        assert!(script.contains("sessionStorage.setItem"));
+        assert!(script.contains("sunbolt-terminal-close-tab"));
+        assert!(script.contains("closeUiTab"));
+        assert!(script.contains("detachTerminal"));
+        assert!(script.contains("closeTerminal"));
+        assert!(script.contains(r#"type: "detach""#));
+        assert!(script.contains(r#"type: "terminate""#));
+        assert!(script.contains("mobileReconnectButton.addEventListener"));
+        assert!(script.contains("mobileDetachButton.addEventListener"));
+        assert!(script.contains("mobileTerminateButton.addEventListener"));
     }
 }

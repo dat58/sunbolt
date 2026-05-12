@@ -132,4 +132,6 @@ Storage variables are listed in `.env.example`. PostgreSQL is mandatory for prod
 - Remote terminal reattach is not production-complete.
 - Some production-critical state still needs PostgreSQL-backed repositories.
 - The production agent transport abstraction and TLS/TCP/443 baseline are still planned work.
-- Mobile, tablet, laptop, and desktop validation is still manual until UI test automation is added.
+- Mobile, tablet, laptop, and desktop layout contracts have static `cargo test`
+  coverage for the required viewport sizes. Browser screenshot validation is
+  still manual until end-to-end UI automation is added.

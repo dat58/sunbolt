@@ -365,21 +365,21 @@ Goal: redesign the UI into reusable pages and components that work across device
 
 ## Required Viewport Validation
 
-- [ ] Validate iPhone 11 Pro viewport: `375x812`.
-- [ ] Validate iPad 11 Pro portrait viewport: `834x1194`.
-- [ ] Validate iPad 11 Pro landscape viewport: `1194x834`.
-- [ ] Validate laptop viewport: `1366x768`.
-- [ ] Validate desktop viewport: `1920x1080`.
+- [x] Validate iPhone 11 Pro viewport: `375x812`.
+- [x] Validate iPad 11 Pro portrait viewport: `834x1194`.
+- [x] Validate iPad 11 Pro landscape viewport: `1194x834`.
+- [x] Validate laptop viewport: `1366x768`.
+- [x] Validate desktop viewport: `1920x1080`.
 
 For each viewport:
 
-- [ ] Navigation does not break.
-- [ ] Terminal is usable.
-- [ ] Session switching works.
-- [ ] Text and controls do not overlap.
-- [ ] Login flow is usable.
-- [ ] MFA flow is usable.
-- [ ] Close tab, detach, and terminate semantics are clear.
+- [x] Navigation does not break.
+- [x] Terminal is usable.
+- [x] Session switching works.
+- [x] Text and controls do not overlap.
+- [x] Login flow is usable.
+- [x] MFA flow is usable.
+- [x] Close tab, detach, and terminate semantics are clear.
 
 ---
 
