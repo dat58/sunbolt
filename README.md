@@ -70,7 +70,22 @@ The Rust workspace separates core areas of responsibility:
 Run these before committing code changes:
 
 ```bash
-cargo fmt
+make release-checks
+```
+
+`make release-checks` runs:
+
+```bash
+cargo fmt --all -- --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
+```
+
+For an assisted single-host Docker deployment, create and edit the production
+environment file, then run the deploy target:
+
+```bash
+make prod-env-init
+$EDITOR config/production.env
+make deploy
 ```

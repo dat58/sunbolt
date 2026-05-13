@@ -21,6 +21,7 @@ Useful supporting targets:
 - `make ui-css-watch`: keep the Tailwind bundle updating during UI work.
 - `make agent-token`: print a fresh one-time enrollment token without starting the agent.
 - `make checks`: run `cargo test` and `cargo clippy --all-targets --all-features -- -D warnings`.
+- `make release-checks`: run the full local release gate, including `cargo fmt --all -- --check`.
 
 The `Makefile` auto-loads `.env` when present. Override ports or local credentials per command when needed:
 
