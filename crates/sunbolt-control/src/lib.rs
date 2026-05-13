@@ -63,7 +63,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::{process::Command, sync::Arc, time::Duration};
     use sunbolt_audit::AuditEventKind;
-    use sunbolt_auth::{AuthConfig, AuthService, SESSION_COOKIE_NAME};
+    use sunbolt_auth::{AuthConfig, AuthService, Permission, UserRole, SESSION_COOKIE_NAME};
     use sunbolt_protocol::{
         transport::AgentTransportKind, AgentTerminalCommand, AgentTerminalEvent,
         TerminalClientMessage, TerminalError, TerminalErrorCode, TerminalReconnectToken,
@@ -886,6 +886,210 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn viewer_and_operator_boundaries_reject_sensitive_http_routes() {
+        let router = test_router();
+        let admin_cookie =
+            login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+        let operator_cookie =
+            login_and_get_cookie(&router, "operator@example.com", "operator-password").await;
+        let viewer_cookie =
+            login_and_get_cookie(&router, "viewer@example.com", "viewer-password").await;
+        let enrollment = enroll_test_agent(&router, &admin_cookie).await;
+
+        for cookie in [&operator_cookie, &viewer_cookie] {
+            let audit_response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri(AUDIT_LOGS_PATH)
+                        .header(header::COOKIE, cookie.as_str())
+                        .body(Body::empty())
+                        .expect("request should build"),
+                )
+                .await
+                .expect("router should respond");
+            assert_eq!(audit_response.status(), StatusCode::FORBIDDEN);
+
+            let enrollment_response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(ENROLLMENT_TOKENS_PATH)
+                        .header(
+                            crate::security::CSRF_HEADER_NAME,
+                            crate::security::CSRF_HEADER_VALUE,
+                        )
+                        .header(header::COOKIE, cookie.as_str())
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({"expires_in_secs": 300}).to_string()))
+                        .expect("request should build"),
+                )
+                .await
+                .expect("router should respond");
+            assert_eq!(enrollment_response.status(), StatusCode::FORBIDDEN);
+
+            let details_response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri(format!("{NODES_PATH}/{}", enrollment.node_id))
+                        .header(header::COOKIE, cookie.as_str())
+                        .body(Body::empty())
+                        .expect("request should build"),
+                )
+                .await
+                .expect("router should respond");
+            assert_eq!(details_response.status(), StatusCode::FORBIDDEN);
+
+            let rotate_response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(format!(
+                            "{NODES_PATH}/{}/credentials/rotate",
+                            enrollment.node_id
+                        ))
+                        .header(
+                            crate::security::CSRF_HEADER_NAME,
+                            crate::security::CSRF_HEADER_VALUE,
+                        )
+                        .header(header::COOKIE, cookie.as_str())
+                        .body(Body::empty())
+                        .expect("request should build"),
+                )
+                .await
+                .expect("router should respond");
+            assert_eq!(rotate_response.status(), StatusCode::FORBIDDEN);
+
+            let revoke_response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(format!("{NODES_PATH}/{}/revoke", enrollment.node_id))
+                        .header(
+                            crate::security::CSRF_HEADER_NAME,
+                            crate::security::CSRF_HEADER_VALUE,
+                        )
+                        .header(header::COOKIE, cookie.as_str())
+                        .body(Body::empty())
+                        .expect("request should build"),
+                )
+                .await
+                .expect("router should respond");
+            assert_eq!(revoke_response.status(), StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_node_permissions_scope_terminal_access_and_node_views() {
+        let (router, state) = test_router_and_state();
+        let admin_cookie =
+            login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+        let first_enrollment = enroll_test_agent(&router, &admin_cookie).await;
+        let second_enrollment = enroll_test_agent(&router, &admin_cookie).await;
+
+        let workspace = state
+            .auth
+            .create_workspace("Operations")
+            .expect("workspace should be created");
+        let role = state
+            .auth
+            .create_role("Operator")
+            .expect("role should be created");
+        state
+            .auth
+            .grant_role_permission(role.id, Permission::NODE_VIEW)
+            .expect("node view permission should be granted");
+        state
+            .auth
+            .grant_role_permission(role.id, Permission::TERMINAL_OPEN)
+            .expect("terminal open permission should be granted");
+        let (operator, operator_token) = state
+            .auth
+            .login("operator@example.com", "operator-password")
+            .expect("operator should log in");
+        state
+            .auth
+            .add_workspace_member(workspace.id, operator.id, role.id)
+            .expect("workspace member should be added");
+        state
+            .auth
+            .map_node_to_workspace(workspace.id, &first_enrollment.node_id)
+            .expect("node should map to workspace");
+
+        assert!(state
+            .auth
+            .user_has_node_permission(
+                &operator,
+                &first_enrollment.node_id,
+                Permission::TERMINAL_OPEN
+            )
+            .expect("permission check should succeed"));
+        assert!(!state
+            .auth
+            .user_has_node_permission(
+                &operator,
+                &second_enrollment.node_id,
+                Permission::TERMINAL_OPEN
+            )
+            .expect("permission check should succeed"));
+
+        let operator_cookie = format!("{SESSION_COOKIE_NAME}={operator_token}");
+        let nodes_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(NODES_PATH)
+                    .header(header::COOKIE, operator_cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(nodes_response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(nodes_response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        let nodes = payload["nodes"].as_array().expect("nodes should be a list");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0]["node_id"], first_enrollment.node_id);
+
+        let allowed_details = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("{NODES_PATH}/{}", first_enrollment.node_id))
+                    .header(header::COOKIE, operator_cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(allowed_details.status(), StatusCode::OK);
+
+        let denied_details = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("{NODES_PATH}/{}", second_enrollment.node_id))
+                    .header(header::COOKIE, operator_cookie.as_str())
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(denied_details.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn credential_rotation_preserves_node_access_and_is_audited() {
         let (router, state) = test_router_and_state();
         let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
@@ -1185,18 +1389,16 @@ mod tests {
             admin_email: "unused@example.com".to_owned(),
             admin_password: "unused".to_owned(),
         });
+        auth.upsert_user("admin@example.com", "admin-password", UserRole::Admin)
+            .expect("admin should be created");
         auth.upsert_user(
-            "admin@example.com",
-            "admin-password",
-            sunbolt_auth::UserRole::Admin,
+            "operator@example.com",
+            "operator-password",
+            UserRole::Operator,
         )
-        .expect("admin should be created");
-        auth.upsert_user(
-            "viewer@example.com",
-            "viewer-password",
-            sunbolt_auth::UserRole::Viewer,
-        )
-        .expect("viewer should be created");
+        .expect("operator should be created");
+        auth.upsert_user("viewer@example.com", "viewer-password", UserRole::Viewer)
+            .expect("viewer should be created");
         auth
     }
 

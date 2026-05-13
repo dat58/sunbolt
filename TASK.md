@@ -451,13 +451,13 @@ Goal: remove production shortcuts and enforce security policy.
 
 ## Authorization
 
-- [ ] Audit every HTTP route for server-side authorization.
-- [ ] Audit every WebSocket command for server-side authorization.
-- [ ] Add permission for terminal reattach.
-- [ ] Add permission for terminal terminate.
-- [ ] Add permission for node credential rotation.
-- [ ] Add tests for viewer/operator/admin boundaries.
-- [ ] Add tests for workspace-level terminal access.
+- [x] Audit every HTTP route for server-side authorization.
+- [x] Audit every WebSocket command for server-side authorization.
+- [x] Add permission for terminal reattach.
+- [x] Add permission for terminal terminate.
+- [x] Add permission for node credential rotation.
+- [x] Add tests for viewer/operator/admin boundaries.
+- [x] Add tests for workspace-level terminal access.
 
 ## Rate Limits and Abuse Controls
 

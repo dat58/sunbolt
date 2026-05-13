@@ -246,6 +246,7 @@ async fn handle_terminal_socket(mut socket: WebSocket, state: AppState, user: Us
         handle_remote_terminal_socket(
             socket,
             state,
+            user,
             actor_email,
             node_id,
             session_id,
@@ -554,7 +555,7 @@ async fn handle_terminal_reattach(
                 sender,
                 receiver,
                 state,
-                actor_email,
+                user,
                 session_id,
                 target.output_rx,
                 command_tx,
@@ -735,7 +736,7 @@ fn authorize_session_terminate(
     };
     state
         .auth
-        .user_has_node_permission(user, &node_id, Permission::TERMINAL_CLOSE)
+        .user_has_node_permission(user, &node_id, Permission::TERMINAL_TERMINATE)
         .unwrap_or(false)
 }
 
@@ -837,6 +838,7 @@ async fn receive_start_message(socket: &mut WebSocket) -> Option<TerminalHandsha
 async fn handle_remote_terminal_socket(
     mut socket: WebSocket,
     state: AppState,
+    user: User,
     actor_email: String,
     node_id: NodeId,
     session_id: TerminalSessionId,
@@ -853,6 +855,30 @@ async fn handle_remote_terminal_socket(
         session_id = %session_id.0,
     )
     .in_scope(|| info!("remote terminal open requested"));
+    if !state
+        .auth
+        .user_has_node_permission(&user, &node_id_text, Permission::TERMINAL_OPEN)
+        .unwrap_or(false)
+    {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::TerminalFailed,
+            actor_email: Some(actor_email),
+            message: format!("terminal open is not permitted for node {node_id_text}"),
+        });
+        let _ = send_server_message(
+            &mut socket,
+            TerminalServerMessage::Error {
+                session_id: Some(session_id),
+                error: protocol_error_text(
+                    TerminalErrorCode::Forbidden,
+                    "terminal open is not permitted for this node",
+                ),
+            },
+        )
+        .await;
+        return;
+    }
+
     if !state.node_enrollment.node_is_online(&node_id_text) {
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
@@ -1143,7 +1169,7 @@ async fn handle_remote_terminal_socket(
             }
             incoming = receiver.next() => {
                 if let Some(Ok(message)) = incoming {
-                    if !handle_remote_client_frame(&state, &actor_email, &connection.command_tx, &session_id, message, &mut sender).await {
+                    if !handle_remote_client_frame(&state, &user, &actor_email, &connection.command_tx, &session_id, message, &mut sender).await {
                         break;
                     }
                 } else {
@@ -1186,6 +1212,7 @@ async fn handle_remote_terminal_socket(
 #[allow(clippy::too_many_lines)]
 async fn handle_remote_client_frame(
     state: &AppState,
+    user: &User,
     actor_email: &str,
     command_tx: &mpsc::Sender<AgentTerminalCommand>,
     active_session_id: &TerminalSessionId,
@@ -1223,6 +1250,20 @@ async fn handle_remote_client_frame(
         TerminalClientMessage::Close { session_id }
         | TerminalClientMessage::Terminate { session_id } => {
             if !session_id_matches(&session_id, active_session_id, sender).await {
+                return true;
+            }
+            if !authorize_session_terminate(state, user, active_session_id) {
+                let _ = send_split_server_message(
+                    sender,
+                    TerminalServerMessage::Error {
+                        session_id: Some(active_session_id.clone()),
+                        error: protocol_error_text(
+                            TerminalErrorCode::Forbidden,
+                            "terminal terminate is not permitted for this session",
+                        ),
+                    },
+                )
+                .await;
                 return true;
             }
             state
@@ -1323,14 +1364,14 @@ async fn handle_remote_attached_socket(
     mut sender: futures_util::stream::SplitSink<WebSocket, Message>,
     mut receiver: futures_util::stream::SplitStream<WebSocket>,
     state: AppState,
-    actor_email: String,
+    user: User,
     session_id: TerminalSessionId,
     mut output_rx: broadcast::Receiver<TerminalServerMessage>,
     command_tx: mpsc::Sender<AgentTerminalCommand>,
 ) {
     remote_attached_loop(
         &state,
-        &actor_email,
+        &user,
         &session_id,
         &command_tx,
         &mut sender,
@@ -1342,13 +1383,14 @@ async fn handle_remote_attached_socket(
 
 async fn remote_attached_loop(
     state: &AppState,
-    actor_email: &str,
+    user: &User,
     session_id: &TerminalSessionId,
     command_tx: &mpsc::Sender<AgentTerminalCommand>,
     sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     receiver: &mut futures_util::stream::SplitStream<WebSocket>,
     output_rx: &mut broadcast::Receiver<TerminalServerMessage>,
 ) {
+    let actor_email = user.email.as_str();
     loop {
         tokio::select! {
             output = output_rx.recv() => {
@@ -1374,6 +1416,7 @@ async fn remote_attached_loop(
                     state.sessions.touch(session_id);
                     if !handle_remote_client_frame(
                         state,
+                        user,
                         actor_email,
                         command_tx,
                         session_id,

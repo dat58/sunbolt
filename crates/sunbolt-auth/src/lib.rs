@@ -881,6 +881,23 @@ impl AuthService {
         self.user_has_workspace_permission(user, workspace_id, permission)
     }
 
+    /// Returns true when the user has a control-plane level permission.
+    ///
+    /// These permissions are not scoped to a single workspace or node yet, so
+    /// only administrators receive them until the API accepts an explicit
+    /// workspace context.
+    #[must_use]
+    pub fn user_has_control_plane_permission(&self, user: &User, permission: Permission) -> bool {
+        matches!(
+            (user.role, permission),
+            (UserRole::Admin, _)
+                | (
+                    UserRole::Operator,
+                    Permission::TERMINAL_OPEN | Permission::TERMINAL_REATTACH,
+                )
+        )
+    }
+
     /// Returns enabled MFA factors for a user.
     ///
     /// # Errors
@@ -1134,6 +1151,10 @@ impl Permission {
     pub const TERMINAL_REATTACH: Self = Self("terminal.reattach");
     /// Permission required to terminate a terminal.
     pub const TERMINAL_CLOSE: Self = Self("terminal.close");
+    /// Permission required to explicitly terminate a terminal session.
+    pub const TERMINAL_TERMINATE: Self = Self("terminal.terminate");
+    /// Permission required to view audit logs and access history.
+    pub const AUDIT_VIEW: Self = Self("audit.view");
     /// Permission required to view a node.
     pub const NODE_VIEW: Self = Self("node.view");
     /// Permission required to register a node.
@@ -1751,6 +1772,48 @@ mod tests {
         assert!(!auth
             .user_has_node_permission(&user, "node-2", Permission::NODE_VIEW)
             .expect("node permission check should work"));
+    }
+
+    #[test]
+    fn auth_service_distinguishes_control_plane_and_workspace_permissions() {
+        let auth = test_auth_service();
+        let admin = auth
+            .upsert_user("admin@example.com", "pass", UserRole::Admin)
+            .expect("admin should upsert");
+        let operator = auth
+            .upsert_user("operator@example.com", "pass", UserRole::Operator)
+            .expect("operator should upsert");
+        let workspace = auth
+            .create_workspace("Operations")
+            .expect("workspace should be created");
+        let role = auth
+            .create_role("Terminal Operator")
+            .expect("role should be created");
+        auth.grant_role_permission(role.id, Permission::TERMINAL_REATTACH)
+            .expect("reattach permission should be granted");
+        auth.grant_role_permission(role.id, Permission::TERMINAL_TERMINATE)
+            .expect("terminate permission should be granted");
+        auth.grant_role_permission(role.id, Permission::NODE_CREDENTIAL_ROTATE)
+            .expect("credential rotation permission should be granted");
+        auth.add_workspace_member(workspace.id, operator.id, role.id)
+            .expect("member should be added");
+        auth.map_node_to_workspace(workspace.id, "node-1")
+            .expect("node should map");
+
+        assert!(auth.user_has_control_plane_permission(&admin, Permission::AUDIT_VIEW));
+        assert!(!auth.user_has_control_plane_permission(&operator, Permission::AUDIT_VIEW));
+        assert!(auth
+            .user_has_node_permission(&operator, "node-1", Permission::TERMINAL_REATTACH)
+            .expect("permission check should work"));
+        assert!(auth
+            .user_has_node_permission(&operator, "node-1", Permission::TERMINAL_TERMINATE)
+            .expect("permission check should work"));
+        assert!(auth
+            .user_has_node_permission(&operator, "node-1", Permission::NODE_CREDENTIAL_ROTATE)
+            .expect("permission check should work"));
+        assert!(!auth
+            .user_has_node_permission(&operator, "node-2", Permission::TERMINAL_TERMINATE)
+            .expect("permission check should work"));
     }
 
     fn test_auth_service() -> AuthService {

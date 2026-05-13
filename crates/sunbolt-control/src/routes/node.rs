@@ -47,27 +47,74 @@ pub(crate) async fn create_enrollment_token(
     Json(request): Json<EnrollmentTokenRequest>,
 ) -> impl IntoResponse {
     crate::observability::record_actor_email(&user.0.email);
+    if !state
+        .auth
+        .user_has_control_plane_permission(&user.0, Permission::NODE_REGISTER)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "node enrollment token creation is not permitted",
+            }),
+        )
+            .into_response();
+    }
+
     let ttl = Duration::from_secs(request.expires_in_secs.unwrap_or(15 * 60).max(60));
-    Json(state.node_enrollment.create_token(&user.0, ttl))
+    Json(state.node_enrollment.create_token(&user.0, ttl)).into_response()
 }
 
-pub(crate) async fn list_nodes(State(state): State<AppState>) -> impl IntoResponse {
-    Json(NodeListResponse {
-        nodes: state.node_enrollment.list_nodes(),
-    })
+pub(crate) async fn list_nodes(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    crate::observability::record_actor_email(&user.0.email);
+    let nodes = state
+        .node_enrollment
+        .list_nodes()
+        .into_iter()
+        .filter(|node| {
+            state
+                .auth
+                .user_has_node_permission(&user.0, &node.node_id, Permission::NODE_VIEW)
+                .unwrap_or(false)
+        })
+        .collect();
+    Json(NodeListResponse { nodes })
 }
 
 pub(crate) async fn node_details(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(node_id): Path<String>,
 ) -> impl IntoResponse {
+    crate::observability::record_actor_email(&user.0.email);
     crate::observability::record_node_id(&node_id);
-    match state.node_enrollment.node_details(&node_id) {
-        Some(node) => Json(NodeDetailsResponse { node }).into_response(),
-        None => (
+    let Some(node) = state.node_enrollment.node_details(&node_id) else {
+        return (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "node not found",
+            }),
+        )
+            .into_response();
+    };
+    match state
+        .auth
+        .user_has_node_permission(&user.0, &node_id, Permission::NODE_VIEW)
+    {
+        Ok(true) => Json(NodeDetailsResponse { node }).into_response(),
+        Ok(false) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "node view is not permitted",
+            }),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "auth service unavailable",
             }),
         )
             .into_response(),
@@ -149,6 +196,31 @@ pub(crate) async fn revoke_node(
 ) -> impl IntoResponse {
     crate::observability::record_actor_email(&user.0.email);
     crate::observability::record_node_id(&node_id);
+    match state
+        .auth
+        .user_has_node_permission(&user.0, &node_id, Permission::NODE_REVOKE)
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "node revocation is not permitted",
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "auth service unavailable",
+                }),
+            )
+                .into_response();
+        }
+    }
+
     match state.node_enrollment.revoke_node(&node_id) {
         Ok(node) => {
             let closed = state.sessions.close_sessions_for_node(&node_id);
