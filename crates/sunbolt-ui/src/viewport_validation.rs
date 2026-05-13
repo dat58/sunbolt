@@ -78,6 +78,8 @@ pub const REQUIRED_VIEWPORT_VALIDATION_CHECKS: [ViewportValidationCheck; 7] = [
     ViewportValidationCheck::TerminalLifecycleSemantics,
 ];
 
+pub const UI_VALIDATION_ARTIFACT: &str = "cargo test -p sunbolt-ui viewport_validation";
+
 pub const REQUIRED_VIEWPORTS: [RequiredViewport; 5] = [
     RequiredViewport {
         label: "iPhone 11 Pro",
@@ -111,10 +113,53 @@ pub const REQUIRED_VIEWPORTS: [RequiredViewport; 5] = [
     },
 ];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ViewportValidationCase {
+    pub viewport: RequiredViewport,
+    pub checks: &'static [ViewportValidationCheck],
+    pub artifact: &'static str,
+}
+
+pub const REQUIRED_VIEWPORT_VALIDATION_CASES: [ViewportValidationCase; 5] = [
+    ViewportValidationCase {
+        viewport: REQUIRED_VIEWPORTS[0],
+        checks: &REQUIRED_VIEWPORT_VALIDATION_CHECKS,
+        artifact: UI_VALIDATION_ARTIFACT,
+    },
+    ViewportValidationCase {
+        viewport: REQUIRED_VIEWPORTS[1],
+        checks: &REQUIRED_VIEWPORT_VALIDATION_CHECKS,
+        artifact: UI_VALIDATION_ARTIFACT,
+    },
+    ViewportValidationCase {
+        viewport: REQUIRED_VIEWPORTS[2],
+        checks: &REQUIRED_VIEWPORT_VALIDATION_CHECKS,
+        artifact: UI_VALIDATION_ARTIFACT,
+    },
+    ViewportValidationCase {
+        viewport: REQUIRED_VIEWPORTS[3],
+        checks: &REQUIRED_VIEWPORT_VALIDATION_CHECKS,
+        artifact: UI_VALIDATION_ARTIFACT,
+    },
+    ViewportValidationCase {
+        viewport: REQUIRED_VIEWPORTS[4],
+        checks: &REQUIRED_VIEWPORT_VALIDATION_CHECKS,
+        artifact: UI_VALIDATION_ARTIFACT,
+    },
+];
+
 #[must_use]
 pub fn required_viewport(label: &str) -> Option<RequiredViewport> {
     REQUIRED_VIEWPORTS
         .iter()
         .copied()
         .find(|viewport| viewport.label == label)
+}
+
+#[must_use]
+pub fn required_viewport_validation_case(label: &str) -> Option<ViewportValidationCase> {
+    REQUIRED_VIEWPORT_VALIDATION_CASES
+        .iter()
+        .copied()
+        .find(|case| case.viewport.label == label)
 }

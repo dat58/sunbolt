@@ -34,8 +34,9 @@ mod tests {
         TerminalWorkspacePanel, TerminalWorkspaceState, TERMINAL_MOUNT_ID, TERMINAL_NODE_INPUT_ID,
     };
     use crate::viewport_validation::{
-        required_viewport, TerminalLayoutExpectation, ViewportClass, REQUIRED_VIEWPORTS,
-        REQUIRED_VIEWPORT_VALIDATION_CHECKS,
+        required_viewport, required_viewport_validation_case, TerminalLayoutExpectation,
+        ViewportClass, REQUIRED_VIEWPORTS, REQUIRED_VIEWPORT_VALIDATION_CASES,
+        REQUIRED_VIEWPORT_VALIDATION_CHECKS, UI_VALIDATION_ARTIFACT,
     };
 
     const TAILWIND_CSS: &str = include_str!("../styles/tailwind.css");
@@ -291,6 +292,25 @@ mod tests {
                             | crate::viewport_validation::ViewportValidationCheck::TerminalLifecycleSemantics
                     ))
             );
+        }
+    }
+
+    #[test]
+    fn viewport_validation_cases_record_release_gate_artifacts() {
+        assert_eq!(
+            REQUIRED_VIEWPORT_VALIDATION_CASES.len(),
+            REQUIRED_VIEWPORTS.len()
+        );
+
+        for viewport in REQUIRED_VIEWPORTS {
+            let case = required_viewport_validation_case(viewport.label)
+                .expect("required viewport should have a validation case");
+
+            assert_eq!(case.viewport, viewport);
+            assert_eq!(case.checks, REQUIRED_VIEWPORT_VALIDATION_CHECKS);
+            assert_eq!(case.artifact, UI_VALIDATION_ARTIFACT);
+            assert!(case.artifact.contains("sunbolt-ui"));
+            assert!(case.artifact.contains("viewport_validation"));
         }
     }
 

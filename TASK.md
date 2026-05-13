@@ -475,6 +475,7 @@ Goal: define the checks required before treating a build as production-ready.
 
 - [~] Phase 8.10 is in progress as of 2026-05-13.
 - [~] 2026-05-13 continuation: repeat the local Rust release gate and record automated validation coverage.
+- [x] 2026-05-13 UI validation coverage recorded as `cargo test -p sunbolt-ui viewport_validation` artifacts.
 
 ## Required Local Checks
 
@@ -509,12 +510,12 @@ Goal: define the checks required before treating a build as production-ready.
 
 ## UI Validation
 
-- [ ] Validate iPhone 11 Pro: `375x812`.
-- [ ] Validate iPad 11 Pro portrait: `834x1194`.
-- [ ] Validate iPad 11 Pro landscape: `1194x834`.
-- [ ] Validate laptop: `1366x768`.
-- [ ] Validate desktop: `1920x1080`.
-- [ ] Capture screenshots or test artifacts where practical.
+- [x] Validate iPhone 11 Pro: `375x812`.
+- [x] Validate iPad 11 Pro portrait: `834x1194`.
+- [x] Validate iPad 11 Pro landscape: `1194x834`.
+- [x] Validate laptop: `1366x768`.
+- [x] Validate desktop: `1920x1080`.
+- [x] Capture screenshots or test artifacts where practical.
 
 ## Release Documentation
 
