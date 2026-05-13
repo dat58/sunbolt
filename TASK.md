@@ -474,6 +474,7 @@ Goal: remove production shortcuts and enforce security policy.
 Goal: define the checks required before treating a build as production-ready.
 
 - [~] Phase 8.10 is in progress as of 2026-05-13.
+- [~] 2026-05-13 continuation: repeat the local Rust release gate and record automated validation coverage.
 
 ## Required Local Checks
 
@@ -486,25 +487,25 @@ Goal: define the checks required before treating a build as production-ready.
 
 ## Terminal Reliability Validation
 
-- [ ] Validate local terminal open/input/output/resize/terminate.
+- [x] Validate local terminal open/input/output/resize/terminate through automated terminal tests.
 - [ ] Validate remote terminal open/input/output/resize/terminate.
 - [ ] Validate browser route change does not kill PTY.
 - [ ] Validate browser refresh can recover active sessions where supported.
 - [ ] Validate short WebSocket disconnect and reattach.
-- [ ] Validate idle timeout.
-- [ ] Validate absolute max duration.
-- [ ] Validate per-user session limit.
-- [ ] Validate per-node session limit.
+- [x] Validate idle timeout through automated session cleanup tests.
+- [x] Validate absolute max duration through automated session cleanup tests.
+- [x] Validate per-user session limit through automated control-plane tests.
+- [x] Validate per-node session limit through automated control-plane tests.
 
 ## Agent Transport Validation
 
-- [ ] Validate outbound TCP/443 transport.
-- [ ] Validate agent reconnect with backoff.
-- [ ] Validate control-plane detection of offline node.
+- [x] Validate outbound TCP/443 transport through automated transport negotiation tests.
+- [x] Validate agent reconnect with backoff through automated transport policy tests.
+- [x] Validate control-plane detection of offline node through automated heartbeat timeout tests.
 - [ ] Validate terminal behavior during agent disconnect.
 - [ ] Validate terminal behavior after agent reconnect.
-- [ ] Validate revoked agent cannot reconnect.
-- [ ] Validate QUIC fast path if implemented.
+- [x] Validate revoked agent cannot reconnect through automated transport authentication tests.
+- [x] Validate QUIC fast path if implemented through automated protocol fallback tests.
 
 ## UI Validation
 
