@@ -14,8 +14,14 @@ pub(crate) const DEFAULT_MAX_SESSIONS_PER_NODE: usize = 10;
 pub(crate) const DEFAULT_MAX_DURATION: Duration = Duration::from_secs(8 * 60 * 60);
 pub(crate) const DEFAULT_LOGIN_RATE_WINDOW: Duration = Duration::from_secs(15 * 60);
 pub(crate) const DEFAULT_LOGIN_RATE_MAX: usize = 10;
+pub(crate) const DEFAULT_MFA_RATE_WINDOW: Duration = Duration::from_secs(5 * 60);
+pub(crate) const DEFAULT_MFA_RATE_MAX: usize = 5;
 pub(crate) const DEFAULT_TERMINAL_RATE_WINDOW: Duration = Duration::from_secs(60);
 pub(crate) const DEFAULT_TERMINAL_RATE_MAX: usize = 5;
+pub(crate) const DEFAULT_ENROLLMENT_TOKEN_RATE_WINDOW: Duration = Duration::from_secs(15 * 60);
+pub(crate) const DEFAULT_ENROLLMENT_TOKEN_RATE_MAX: usize = 5;
+pub(crate) const DEFAULT_AGENT_AUTH_FAILURE_RATE_WINDOW: Duration = Duration::from_secs(5 * 60);
+pub(crate) const DEFAULT_AGENT_AUTH_FAILURE_RATE_MAX: usize = 10;
 const REQUIRED_PRODUCTION_CONFIG_VARS: [&str; 2] = ["SUNBOLT_DATABASE_URL", "SUNBOLT_PUBLIC_URL"];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

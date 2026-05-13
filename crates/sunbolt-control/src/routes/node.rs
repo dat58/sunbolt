@@ -60,6 +60,19 @@ pub(crate) async fn create_enrollment_token(
             .into_response();
     }
 
+    if !state
+        .enrollment_token_rate_limiter
+        .check_and_record(&user.0.email)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "too many enrollment token requests",
+            }),
+        )
+            .into_response();
+    }
+
     let ttl = Duration::from_secs(request.expires_in_secs.unwrap_or(15 * 60).max(60));
     Json(state.node_enrollment.create_token(&user.0, ttl)).into_response()
 }

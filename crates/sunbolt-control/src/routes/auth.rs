@@ -50,11 +50,12 @@ pub(crate) async fn auth_login(
     State(state): State<AppState>,
     Json(request): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    crate::observability::record_actor_email(&request.email);
-    if !state.login_rate_limiter.check_and_record(&request.email) {
+    let actor_key = auth_rate_limit_key(&request.email);
+    crate::observability::record_actor_email(&actor_key);
+    if !state.login_rate_limiter.check_and_record(&actor_key) {
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::UserLoginFailed,
-            actor_email: Some(request.email.clone()),
+            actor_email: Some(actor_key),
             message: "login rate limit exceeded".to_owned(),
         });
         return (
@@ -90,7 +91,7 @@ pub(crate) async fn auth_login(
         Err(AuthError::InvalidCredentials) => (StatusCode::UNAUTHORIZED, {
             state.audit.record(AuditEventInput {
                 kind: AuditEventKind::UserLoginFailed,
-                actor_email: Some(request.email),
+                actor_email: Some(auth_rate_limit_key(&request.email)),
                 message: "login rejected".to_owned(),
             });
             Json(ErrorResponse {
@@ -161,6 +162,21 @@ pub(crate) async fn auth_mfa_step_up(
     Json(request): Json<StepUpMfaRequest>,
 ) -> impl IntoResponse {
     crate::observability::record_actor_email(&user.0.email);
+    if !state.mfa_rate_limiter.check_and_record(&user.0.email) {
+        state.audit.record(AuditEventInput {
+            kind: AuditEventKind::UserMfaChallenge,
+            actor_email: Some(user.0.email),
+            message: "step-up MFA challenge rate limit exceeded".to_owned(),
+        });
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "too many step-up MFA attempts",
+            }),
+        )
+            .into_response();
+    }
+
     state.audit.record(AuditEventInput {
         kind: AuditEventKind::UserMfaChallenge,
         actor_email: Some(user.0.email.clone()),
@@ -207,4 +223,8 @@ pub(crate) async fn auth_mfa_step_up(
         )
             .into_response(),
     }
+}
+
+fn auth_rate_limit_key(email: &str) -> String {
+    email.trim().to_ascii_lowercase()
 }

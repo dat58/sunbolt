@@ -46,11 +46,19 @@ pub(crate) async fn agent_heartbeat(
         })
         .into_response(),
         Err(error @ NodeConnectionError::Revoked) => {
-            record_agent_authentication_failed(&state, &node_id, error);
+            let rate_limited = record_agent_authentication_failed(&state, &node_id, error);
             (
-                StatusCode::FORBIDDEN,
+                if rate_limited {
+                    StatusCode::TOO_MANY_REQUESTS
+                } else {
+                    StatusCode::FORBIDDEN
+                },
                 Json(ErrorResponse {
-                    error: "node revoked",
+                    error: if rate_limited {
+                        "too many agent authentication failures"
+                    } else {
+                        "node revoked"
+                    },
                 }),
             )
                 .into_response()
@@ -60,11 +68,19 @@ pub(crate) async fn agent_heartbeat(
             | NodeConnectionError::InvalidCredential
             | NodeConnectionError::CredentialExpired),
         ) => {
-            record_agent_authentication_failed(&state, &node_id, error);
+            let rate_limited = record_agent_authentication_failed(&state, &node_id, error);
             (
-                StatusCode::UNAUTHORIZED,
+                if rate_limited {
+                    StatusCode::TOO_MANY_REQUESTS
+                } else {
+                    StatusCode::UNAUTHORIZED
+                },
                 Json(ErrorResponse {
-                    error: "invalid node credential",
+                    error: if rate_limited {
+                        "too many agent authentication failures"
+                    } else {
+                        "invalid node credential"
+                    },
                 }),
             )
                 .into_response()
@@ -72,15 +88,27 @@ pub(crate) async fn agent_heartbeat(
     }
 }
 
-fn record_agent_authentication_failed(state: &AppState, node_id: &str, error: NodeConnectionError) {
+fn record_agent_authentication_failed(
+    state: &AppState,
+    node_id: &str,
+    error: NodeConnectionError,
+) -> bool {
+    let allowed = state
+        .agent_auth_failure_rate_limiter
+        .check_and_record(node_id);
     state.audit.record(AuditEventInput {
         kind: AuditEventKind::AgentAuthenticationFailed,
         actor_email: None,
-        message: format!(
-            "agent authentication failed for node {node_id}: {}",
-            node_connection_error_reason(error)
-        ),
+        message: if allowed {
+            format!(
+                "agent authentication failed for node {node_id}: {}",
+                node_connection_error_reason(error)
+            )
+        } else {
+            format!("agent authentication rate limit exceeded for node {node_id}")
+        },
     });
+    !allowed
 }
 
 const fn node_connection_error_reason(error: NodeConnectionError) -> &'static str {

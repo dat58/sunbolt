@@ -461,11 +461,11 @@ Goal: remove production shortcuts and enforce security policy.
 
 ## Rate Limits and Abuse Controls
 
-- [ ] Review login rate limits.
-- [ ] Add MFA challenge rate limits.
-- [ ] Review terminal creation rate limits.
-- [ ] Add enrollment token creation rate limits.
-- [ ] Add agent authentication failure rate limits where practical.
+- [x] Review login rate limits.
+- [x] Add MFA challenge rate limits.
+- [x] Review terminal creation rate limits.
+- [x] Add enrollment token creation rate limits.
+- [x] Add agent authentication failure rate limits where practical.
 
 ---
 

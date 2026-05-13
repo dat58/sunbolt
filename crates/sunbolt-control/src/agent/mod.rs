@@ -328,21 +328,25 @@ pub(crate) async fn agent_transport_long_poll(
     match handle_agent_transport_long_poll_request(&state, request).await {
         Ok(response) => Json(response).into_response(),
         Err(error) => {
-            record_agent_transport_authentication_failure(
+            let rate_limited = record_agent_transport_authentication_failure(
                 &state,
                 &failed_node_id,
                 &failed_transport_id,
                 error,
             );
             (
-                StatusCode::BAD_REQUEST,
+                if rate_limited {
+                    StatusCode::TOO_MANY_REQUESTS
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
                 Json(AgentTransportLongPollResponse {
                     envelopes: vec![AgentTransportEnvelope::current(
                         AgentTransportMessageId::first(),
                         failed_node_id,
                         failed_transport_id,
                         AgentTransportPayload::Error {
-                            error: transport_error_for_connection(error),
+                            error: transport_error_for_auth_rate_limit(error, rate_limited),
                         },
                     )],
                     retry_after_ms: millis(AGENT_TRANSPORT_LONG_POLL_RETRY),
@@ -381,7 +385,7 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
     let handshake = match negotiate_transport(&state, first_envelope) {
         Ok(handshake) => handshake,
         Err(error) => {
-            record_agent_transport_authentication_failure(
+            let rate_limited = record_agent_transport_authentication_failure(
                 &state,
                 &failed_node_id,
                 &failed_transport_id,
@@ -392,7 +396,7 @@ async fn handle_agent_transport_socket(mut socket: WebSocket, state: AppState) {
                 AgentTransportMessageId::first(),
                 failed_node_id,
                 failed_transport_id,
-                transport_error_for_connection(error),
+                transport_error_for_auth_rate_limit(error, rate_limited),
             )
             .await;
             return;
@@ -899,7 +903,7 @@ fn record_agent_transport_authentication_failure(
     node_id: &NodeId,
     transport_id: &AgentTransportId,
     error: AgentTransportConnectionError,
-) {
+) -> bool {
     crate::observability::record_node_id(&node_id.0);
     crate::observability::record_transport_id(&transport_id.0);
     if !matches!(
@@ -907,8 +911,11 @@ fn record_agent_transport_authentication_failure(
         AgentTransportConnectionError::AuthenticationFailed
             | AgentTransportConnectionError::Revoked
     ) {
-        return;
+        return false;
     }
+    let allowed = state
+        .agent_auth_failure_rate_limiter
+        .check_and_record(&node_id.0);
 
     info_span!(
         "agent.transport.authentication_failed",
@@ -920,13 +927,35 @@ fn record_agent_transport_authentication_failure(
     state.audit.record(AuditEventInput {
         kind: AuditEventKind::AgentAuthenticationFailed,
         actor_email: None,
-        message: format!(
-            "agent transport authentication failed for node {} on transport {}: {}",
-            node_id.0,
-            transport_id.0,
-            agent_transport_authentication_failure_reason(error)
-        ),
+        message: if allowed {
+            format!(
+                "agent transport authentication failed for node {} on transport {}: {}",
+                node_id.0,
+                transport_id.0,
+                agent_transport_authentication_failure_reason(error)
+            )
+        } else {
+            format!(
+                "agent transport authentication rate limit exceeded for node {} on transport {}",
+                node_id.0, transport_id.0
+            )
+        },
     });
+    !allowed
+}
+
+fn transport_error_for_auth_rate_limit(
+    error: AgentTransportConnectionError,
+    rate_limited: bool,
+) -> AgentTransportError {
+    if rate_limited {
+        transport_error(
+            AgentTransportErrorCode::AuthenticationFailed,
+            "too many agent transport authentication failures",
+        )
+    } else {
+        transport_error_for_connection(error)
+    }
 }
 
 const fn agent_transport_authentication_failure_reason(
@@ -1100,7 +1129,9 @@ mod tests {
         validate_quic_client_hello, AgentConnectionRegistration, AgentConnectionRegistry,
         AgentEnrollmentRequest, AgentTransportHandshake,
     };
-    use crate::{error::AgentTransportConnectionError, state::AppState};
+    use crate::{
+        error::AgentTransportConnectionError, rate_limit::SlidingWindowRateLimiter, state::AppState,
+    };
     use std::time::Duration;
     use sunbolt_audit::AuditEventKind;
     use sunbolt_auth::{AuthConfig, AuthService, User, UserRole};
@@ -1282,6 +1313,51 @@ mod tests {
         assert!(state.audit.events().iter().any(|event| {
             event.kind == AuditEventKind::AgentAuthenticationFailed
                 && event.message.contains("invalid node identity")
+        }));
+    }
+
+    #[test]
+    fn failed_transport_authentication_is_rate_limited_per_node() {
+        let (mut state, node_id, credential_fingerprint, _credential_secret) =
+            state_with_enrolled_node();
+        state.agent_auth_failure_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 1);
+
+        let first = client_hello_envelope(
+            &node_id,
+            "transport-1",
+            valid_hello_for_credential(&credential_fingerprint, "wrong-proof"),
+        );
+        let first_node_id = first.node_id.clone();
+        let first_transport_id = first.transport_id.clone();
+        let first_error = negotiate_transport(&state, first)
+            .expect_err("invalid credential proof should be rejected");
+        assert!(!record_agent_transport_authentication_failure(
+            &state,
+            &first_node_id,
+            &first_transport_id,
+            first_error,
+        ));
+
+        let second = client_hello_envelope(
+            &node_id,
+            "transport-2",
+            valid_hello_for_credential(&credential_fingerprint, "wrong-proof"),
+        );
+        let second_node_id = second.node_id.clone();
+        let second_transport_id = second.transport_id.clone();
+        let second_error = negotiate_transport(&state, second)
+            .expect_err("invalid credential proof should be rejected");
+        assert!(record_agent_transport_authentication_failure(
+            &state,
+            &second_node_id,
+            &second_transport_id,
+            second_error,
+        ));
+
+        assert!(state.audit.events().iter().any(|event| {
+            event.kind == AuditEventKind::AgentAuthenticationFailed
+                && event.message.contains("rate limit exceeded")
         }));
     }
 

@@ -7,8 +7,11 @@ use crate::{
     agent::AgentConnectionRegistry,
     config::{
         allowed_origins_from_env, validate_runtime_config_for_mode, ProductionStateConfig,
-        RuntimeMode, TerminalSessionConfig, DEFAULT_LOGIN_RATE_MAX, DEFAULT_LOGIN_RATE_WINDOW,
-        DEFAULT_TERMINAL_RATE_MAX, DEFAULT_TERMINAL_RATE_WINDOW,
+        RuntimeMode, TerminalSessionConfig, DEFAULT_AGENT_AUTH_FAILURE_RATE_MAX,
+        DEFAULT_AGENT_AUTH_FAILURE_RATE_WINDOW, DEFAULT_ENROLLMENT_TOKEN_RATE_MAX,
+        DEFAULT_ENROLLMENT_TOKEN_RATE_WINDOW, DEFAULT_LOGIN_RATE_MAX, DEFAULT_LOGIN_RATE_WINDOW,
+        DEFAULT_MFA_RATE_MAX, DEFAULT_MFA_RATE_WINDOW, DEFAULT_TERMINAL_RATE_MAX,
+        DEFAULT_TERMINAL_RATE_WINDOW,
     },
     error::StartupError,
     node::NodeEnrollmentRegistry,
@@ -29,7 +32,10 @@ pub(crate) struct AppState {
     pub(crate) agent_connections: AgentConnectionRegistry,
     pub(crate) node_router: InMemoryNodeRouter,
     pub(crate) login_rate_limiter: SlidingWindowRateLimiter,
+    pub(crate) mfa_rate_limiter: SlidingWindowRateLimiter,
     pub(crate) terminal_rate_limiter: SlidingWindowRateLimiter,
+    pub(crate) enrollment_token_rate_limiter: SlidingWindowRateLimiter,
+    pub(crate) agent_auth_failure_rate_limiter: SlidingWindowRateLimiter,
     pub(crate) allowed_origins: Vec<String>,
 }
 
@@ -94,9 +100,21 @@ impl AppState {
                 DEFAULT_LOGIN_RATE_WINDOW,
                 DEFAULT_LOGIN_RATE_MAX,
             ),
+            mfa_rate_limiter: SlidingWindowRateLimiter::new(
+                DEFAULT_MFA_RATE_WINDOW,
+                DEFAULT_MFA_RATE_MAX,
+            ),
             terminal_rate_limiter: SlidingWindowRateLimiter::new(
                 DEFAULT_TERMINAL_RATE_WINDOW,
                 DEFAULT_TERMINAL_RATE_MAX,
+            ),
+            enrollment_token_rate_limiter: SlidingWindowRateLimiter::new(
+                DEFAULT_ENROLLMENT_TOKEN_RATE_WINDOW,
+                DEFAULT_ENROLLMENT_TOKEN_RATE_MAX,
+            ),
+            agent_auth_failure_rate_limiter: SlidingWindowRateLimiter::new(
+                DEFAULT_AGENT_AUTH_FAILURE_RATE_WINDOW,
+                DEFAULT_AGENT_AUTH_FAILURE_RATE_MAX,
             ),
             allowed_origins,
         }

@@ -39,7 +39,7 @@ pub(crate) use {
     state::AppState,
     terminal::{
         agent_event_to_browser_message, exit_message, parse_client_message,
-        terminal_size_from_protocol, TerminalSessionRegistry,
+        terminal_creation_allowed, terminal_size_from_protocol, TerminalSessionRegistry,
     },
 };
 
@@ -47,12 +47,13 @@ pub(crate) use {
 mod tests {
     use super::{
         authorize_terminal_request, build_router, component_name, exit_message,
-        parse_client_message, terminal_size_from_protocol, AgentConnectionRegistry, AppState,
-        SessionLimitError, SlidingWindowRateLimiter, TerminalAuthorizationError,
-        TerminalSessionConfig, TerminalSessionRegistry, ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH,
-        AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH,
-        AUTH_MFA_STEP_UP_PATH, AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH,
-        NODES_PATH, TERMINAL_WS_PATH,
+        parse_client_message, terminal_creation_allowed, terminal_size_from_protocol,
+        AgentConnectionRegistry, AppState, SessionLimitError, SlidingWindowRateLimiter,
+        TerminalAuthorizationError, TerminalSessionConfig, TerminalSessionRegistry,
+        ACCESS_HISTORY_PATH, AGENT_ENROLL_PATH, AGENT_HEARTBEAT_PATH, AUDIT_LOGS_PATH,
+        AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_ME_PATH, AUTH_MFA_STEP_UP_PATH,
+        AUTH_TERMINAL_ACCESS_PATH, ENROLLMENT_TOKENS_PATH, HEALTH_PATH, NODES_PATH,
+        TERMINAL_WS_PATH,
     };
     use axum::{
         body::Body,
@@ -1374,7 +1375,12 @@ mod tests {
     fn test_state_with_origins(allowed_origins: Vec<String>) -> AppState {
         let mut state = AppState::development_with_auth(test_auth_service());
         state.login_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.mfa_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
         state.terminal_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.enrollment_token_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.agent_auth_failure_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
         state.allowed_origins = allowed_origins;
         state
     }
@@ -1594,10 +1600,15 @@ mod tests {
     async fn login_rate_limit_blocks_excessive_attempts() {
         let mut state = AppState::development_with_auth(test_auth_service());
         state.login_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 2);
+        state.mfa_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
         state.terminal_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.enrollment_token_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.agent_auth_failure_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
         let router = build_router(state);
 
-        let make_request = || {
+        let make_request = |email: &str| {
             Request::builder()
                 .method(Method::POST)
                 .uri(AUTH_LOGIN_PATH)
@@ -1607,31 +1618,175 @@ mod tests {
                 )
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
-                    json!({"email": "admin@example.com", "password": "wrong"}).to_string(),
+                    json!({"email": email, "password": "wrong"}).to_string(),
                 ))
                 .expect("request should build")
         };
 
         let r1 = router
             .clone()
-            .oneshot(make_request())
+            .oneshot(make_request("Admin@Example.com "))
             .await
             .expect("should respond");
         assert_eq!(r1.status(), StatusCode::UNAUTHORIZED);
 
         let r2 = router
             .clone()
-            .oneshot(make_request())
+            .oneshot(make_request("admin@example.com"))
             .await
             .expect("should respond");
         assert_eq!(r2.status(), StatusCode::UNAUTHORIZED);
 
         let r3 = router
             .clone()
-            .oneshot(make_request())
+            .oneshot(make_request("ADMIN@example.com"))
             .await
             .expect("should respond");
         assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn mfa_step_up_rate_limit_blocks_excessive_challenges() {
+        let mut state = AppState::development_with_auth(test_auth_service());
+        state.login_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.mfa_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 1);
+        state.terminal_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.enrollment_token_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.agent_auth_failure_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        let router = build_router(state);
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+
+        let make_request = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri(AUTH_MFA_STEP_UP_PATH)
+                .header(
+                    crate::security::CSRF_HEADER_NAME,
+                    crate::security::CSRF_HEADER_VALUE,
+                )
+                .header(header::COOKIE, cookie.as_str())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"factor_type": "totp"}).to_string()))
+                .expect("request should build")
+        };
+
+        let first = router
+            .clone()
+            .oneshot(make_request())
+            .await
+            .expect("router should respond");
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = router
+            .oneshot(make_request())
+            .await
+            .expect("router should respond");
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn terminal_creation_rate_limit_blocks_excessive_attempts() {
+        let mut state = AppState::development_with_auth(test_auth_service());
+        state.login_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.mfa_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.terminal_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 1);
+        state.enrollment_token_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.agent_auth_failure_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+
+        assert!(terminal_creation_allowed(&state, "admin@example.com"));
+        assert!(!terminal_creation_allowed(&state, "admin@example.com"));
+        assert!(terminal_creation_allowed(&state, "operator@example.com"));
+    }
+
+    #[tokio::test]
+    async fn enrollment_token_rate_limit_blocks_excessive_creation() {
+        let mut state = AppState::development_with_auth(test_auth_service());
+        state.login_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.mfa_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.terminal_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.enrollment_token_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 1);
+        state.agent_auth_failure_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        let router = build_router(state);
+        let cookie = login_and_get_cookie(&router, "admin@example.com", "admin-password").await;
+
+        let make_request = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri(ENROLLMENT_TOKENS_PATH)
+                .header(
+                    crate::security::CSRF_HEADER_NAME,
+                    crate::security::CSRF_HEADER_VALUE,
+                )
+                .header(header::COOKIE, cookie.as_str())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"expires_in_secs": 300}).to_string()))
+                .expect("request should build")
+        };
+
+        let first = router
+            .clone()
+            .oneshot(make_request())
+            .await
+            .expect("router should respond");
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = router
+            .oneshot(make_request())
+            .await
+            .expect("router should respond");
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn agent_authentication_failure_rate_limit_blocks_heartbeats() {
+        let mut state = AppState::development_with_auth(test_auth_service());
+        state.login_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.mfa_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.terminal_rate_limiter = SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.enrollment_token_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 100);
+        state.agent_auth_failure_rate_limiter =
+            SlidingWindowRateLimiter::new(Duration::from_secs(60), 1);
+        let router = build_router(state);
+
+        let make_request = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri(AGENT_HEARTBEAT_PATH)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "node_id": "node-missing",
+                        "credential_fingerprint": "sha256:missing",
+                        "credential_proof": "wrong-proof",
+                        "hostname": "host-a",
+                        "os": "linux",
+                        "architecture": "x86_64",
+                        "agent_version": "0.1.0"
+                    })
+                    .to_string(),
+                ))
+                .expect("request should build")
+        };
+
+        let first = router
+            .clone()
+            .oneshot(make_request())
+            .await
+            .expect("router should respond");
+        assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+
+        let second = router
+            .oneshot(make_request())
+            .await
+            .expect("router should respond");
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

@@ -199,7 +199,7 @@ pub(crate) async fn terminal_websocket(
     };
     crate::observability::record_actor_email(&user.email);
 
-    if !state.terminal_rate_limiter.check_and_record(&user.email) {
+    if !terminal_creation_allowed(&state, &user.email) {
         state.audit.record(AuditEventInput {
             kind: AuditEventKind::TerminalFailed,
             actor_email: Some(user.email.clone()),
@@ -216,6 +216,10 @@ pub(crate) async fn terminal_websocket(
 
     ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, user))
         .into_response()
+}
+
+pub(crate) fn terminal_creation_allowed(state: &AppState, actor_email: &str) -> bool {
+    state.terminal_rate_limiter.check_and_record(actor_email)
 }
 
 #[allow(clippy::too_many_lines)]
