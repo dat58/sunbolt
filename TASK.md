@@ -473,14 +473,16 @@ Goal: remove production shortcuts and enforce security policy.
 
 Goal: define the checks required before treating a build as production-ready.
 
+- [~] Phase 8.10 is in progress as of 2026-05-13.
+
 ## Required Local Checks
 
-- [ ] Run `cargo test`.
-- [ ] Run `cargo clippy --all-targets --all-features -- -D warnings`.
-- [ ] Run `cargo fmt --all -- --check`.
-- [ ] Run UI build checks when frontend tooling is touched.
-- [ ] Run migration verification when database schema changes.
-- [ ] Run `git status` and review changed files.
+- [x] Run `cargo test`.
+- [x] Run `cargo clippy --all-targets --all-features -- -D warnings`.
+- [x] Run `cargo fmt --all -- --check`.
+- [x] Confirm UI build checks are not required when frontend tooling is not touched.
+- [x] Confirm migration verification is not required when database schema is not changed.
+- [x] Run `git status` and review changed files.
 
 ## Terminal Reliability Validation
 
