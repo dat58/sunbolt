@@ -442,12 +442,12 @@ Goal: remove production shortcuts and enforce security policy.
 
 ## Browser Security
 
-- [ ] Review Content Security Policy.
-- [ ] Review WebSocket origin validation.
-- [ ] Review CORS behavior.
-- [ ] Enforce CSRF protection for state-changing HTTP routes.
-- [ ] Ensure auth tokens are never stored in `localStorage`.
-- [ ] Ensure session cookies are HttpOnly and Secure in production.
+- [x] Review Content Security Policy.
+- [x] Review WebSocket origin validation.
+- [x] Review CORS behavior.
+- [x] Enforce CSRF protection for state-changing HTTP routes.
+- [x] Ensure auth tokens are never stored in `localStorage`.
+- [x] Ensure session cookies are HttpOnly and Secure in production.
 
 ## Authorization
 

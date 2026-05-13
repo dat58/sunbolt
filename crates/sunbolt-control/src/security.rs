@@ -6,18 +6,49 @@ use std::{
 use axum::http::{header, HeaderMap, Method};
 use rand::RngCore;
 
+pub(crate) const CSRF_HEADER_NAME: &str = "x-sunbolt-csrf";
+pub(crate) const CSRF_HEADER_VALUE: &str = "1";
+
 /// Content-Security-Policy value for the Sunbolt web app.
 ///
 /// - `default-src 'self'`: blocks all unspecified sources.
 /// - `script-src 'wasm-unsafe-eval'`: required by Dioxus/WASM bundles.
-/// - `connect-src ws: wss:`: allows WebSocket connections (terminal stream).
+/// - `connect-src`: is generated from configured browser origins.
 /// - `frame-ancestors 'none'`: prevents clickjacking.
-pub const CSP_HEADER_VALUE: &str = "default-src 'self'; \
+const CSP_BASE_HEADER_VALUE: &str = "default-src 'self'; \
     script-src 'self' 'wasm-unsafe-eval'; \
     style-src 'self' 'unsafe-inline'; \
-    connect-src 'self' ws: wss:; \
     img-src 'self' data:; \
+    base-uri 'self'; \
+    form-action 'self'; \
+    object-src 'none'; \
     frame-ancestors 'none'";
+
+/// Builds a Content-Security-Policy value for the web app.
+///
+/// Development may use an empty or wildcard origin list while local topology is
+/// changing. Explicit production origins narrow `connect-src` to same-origin
+/// HTTP plus the matching WebSocket origins needed by terminal sessions.
+#[must_use]
+pub fn content_security_policy(allowed_origins: &[String]) -> String {
+    let mut connect_sources = vec!["'self'".to_owned()];
+
+    if allows_any_origin(allowed_origins) {
+        connect_sources.extend(["ws:".to_owned(), "wss:".to_owned()]);
+    } else {
+        for origin in allowed_origins {
+            push_unique_source(&mut connect_sources, origin);
+            if let Some(websocket_origin) = websocket_origin_for(origin) {
+                push_unique_source(&mut connect_sources, &websocket_origin);
+            }
+        }
+    }
+
+    format!(
+        "{CSP_BASE_HEADER_VALUE}; connect-src {}",
+        connect_sources.join(" ")
+    )
+}
 
 /// Returns `true` when the request origin is acceptable.
 ///
@@ -58,6 +89,17 @@ pub fn is_cors_preflight(method: &Method, headers: &HeaderMap) -> bool {
         && headers.contains_key(header::ACCESS_CONTROL_REQUEST_METHOD)
 }
 
+/// Returns true when a browser state-changing request carries Sunbolt's CSRF
+/// sentinel header. Cross-site forms cannot set this header, and CORS only
+/// allows it for configured origins.
+#[must_use]
+pub fn has_valid_csrf_header(headers: &HeaderMap) -> bool {
+    headers
+        .get(CSRF_HEADER_NAME)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == CSRF_HEADER_VALUE)
+}
+
 /// Returns a copy of `text` with known secret material replaced by
 /// `[REDACTED]`, masking auth tokens, cookies, node credentials, recovery
 /// codes, passkey material, and similar opaque secrets.
@@ -88,11 +130,27 @@ pub(crate) fn token_hash(token: &str) -> u64 {
     hasher.finish()
 }
 
+fn push_unique_source(sources: &mut Vec<String>, source: &str) {
+    if !sources.iter().any(|existing| existing == source) {
+        sources.push(source.to_owned());
+    }
+}
+
+fn websocket_origin_for(origin: &str) -> Option<String> {
+    if let Some(rest) = origin.strip_prefix("https://") {
+        Some(format!("wss://{rest}"))
+    } else {
+        origin
+            .strip_prefix("http://")
+            .map(|rest| format!("ws://{rest}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        allows_any_origin, is_allowed_origin, is_cors_preflight, redact_sensitive, request_origin,
-        CSP_HEADER_VALUE,
+        allows_any_origin, content_security_policy, has_valid_csrf_header, is_allowed_origin,
+        is_cors_preflight, redact_sensitive, request_origin, CSRF_HEADER_NAME,
     };
     use axum::http::{header, header::ORIGIN, HeaderMap, HeaderValue, Method};
 
@@ -104,10 +162,46 @@ mod tests {
 
     #[test]
     fn csp_header_contains_required_directives() {
-        assert!(CSP_HEADER_VALUE.contains("default-src 'self'"));
-        assert!(CSP_HEADER_VALUE.contains("frame-ancestors 'none'"));
-        assert!(CSP_HEADER_VALUE.contains("connect-src 'self' ws: wss:"));
-        assert!(CSP_HEADER_VALUE.contains("wasm-unsafe-eval"));
+        let csp = content_security_policy(&[]);
+
+        assert!(csp.contains("default-src 'self'"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(csp.contains("connect-src 'self' ws: wss:"));
+        assert!(csp.contains("wasm-unsafe-eval"));
+        assert!(csp.contains("base-uri 'self'"));
+        assert!(csp.contains("form-action 'self'"));
+        assert!(csp.contains("object-src 'none'"));
+    }
+
+    #[test]
+    fn csp_connect_src_is_limited_to_explicit_origins() {
+        let csp = content_security_policy(&[
+            "https://control.example.com".to_owned(),
+            "http://localhost:3000".to_owned(),
+        ]);
+
+        assert!(csp.contains("connect-src 'self'"));
+        assert!(csp.contains("https://control.example.com"));
+        assert!(csp.contains("wss://control.example.com"));
+        assert!(csp.contains("http://localhost:3000"));
+        assert!(csp.contains("ws://localhost:3000"));
+        assert!(!connect_src_sources(&csp).contains(&"ws:"));
+        assert!(!connect_src_sources(&csp).contains(&"wss:"));
+    }
+
+    #[test]
+    fn csp_keeps_permissive_connect_src_for_development() {
+        let csp = content_security_policy(&[]);
+
+        assert!(csp.contains("connect-src 'self' ws: wss:"));
+    }
+
+    fn connect_src_sources(csp: &str) -> Vec<&str> {
+        csp.split("; ")
+            .find_map(|directive| directive.strip_prefix("connect-src "))
+            .expect("connect-src should be present")
+            .split_whitespace()
+            .collect()
     }
 
     #[test]
@@ -159,6 +253,18 @@ mod tests {
 
         assert!(is_cors_preflight(&Method::OPTIONS, &headers));
         assert!(!is_cors_preflight(&Method::POST, &headers));
+    }
+
+    #[test]
+    fn csrf_header_requires_exact_sentinel_value() {
+        let mut headers = HeaderMap::new();
+        assert!(!has_valid_csrf_header(&headers));
+
+        headers.insert(CSRF_HEADER_NAME, HeaderValue::from_static("0"));
+        assert!(!has_valid_csrf_header(&headers));
+
+        headers.insert(CSRF_HEADER_NAME, HeaderValue::from_static("1"));
+        assert!(has_valid_csrf_header(&headers));
     }
 
     #[test]

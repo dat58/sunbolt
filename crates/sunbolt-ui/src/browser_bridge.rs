@@ -139,6 +139,11 @@ pub fn terminal_bridge_script() -> String {
     return `${{controlPlaneBaseUrl()}}${{path}}`;
   }};
 
+  const csrfHeaders = (headers = {{}}) => ({{
+    ...headers,
+    "x-sunbolt-csrf": "1"
+  }});
+
   const setError = (message) => {{
     if (!errorDisplay) {{
       return;
@@ -625,7 +630,7 @@ pub fn terminal_bridge_script() -> String {
       const response = await fetch(httpEndpointUrl("{auth_login_endpoint}"), {{
         method: "POST",
         credentials: "include",
-        headers: {{ "content-type": "application/json" }},
+        headers: csrfHeaders({{ "content-type": "application/json" }}),
         body: JSON.stringify({{ email, password }})
       }});
       if (!response.ok) {{
@@ -705,7 +710,8 @@ pub fn terminal_bridge_script() -> String {
       send({{ type: "terminate", session_id: sessionId }});
       fetch(httpEndpointUrl(`{terminal_session_terminate_prefix}/${{sessionId}}/terminate`), {{
         method: "POST",
-        credentials: "include"
+        credentials: "include",
+        headers: csrfHeaders()
       }}).catch(() => {{}});
     }}
     removeSession(sessionId);
@@ -780,7 +786,7 @@ pub fn terminal_bridge_script() -> String {
       const response = await fetch(httpEndpointUrl("{step_up_mfa_endpoint}"), {{
         method: "POST",
         credentials: "include",
-        headers: {{ "content-type": "application/json" }},
+        headers: csrfHeaders({{ "content-type": "application/json" }}),
         body: JSON.stringify({{ factor_type: "totp" }})
       }});
       if (!response.ok) {{

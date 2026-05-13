@@ -1293,6 +1293,47 @@ mod tests {
     }
 
     #[test]
+    fn session_cookie_uses_http_only_strict_same_site_and_secure_when_enabled() {
+        let auth = AuthService::new(AuthConfig {
+            session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            recent_mfa_ttl: Duration::from_secs(DEFAULT_RECENT_MFA_TTL_SECS),
+            secure_cookie: true,
+            require_step_up_mfa_for_terminal: true,
+            bootstrap_admin: false,
+            admin_email: "ignore@example.com".to_owned(),
+            admin_password: "ignore".to_owned(),
+        });
+
+        let cookie = auth.session_cookie_header("session-token");
+
+        assert!(cookie.starts_with("sunbolt_session=session-token;"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Secure"));
+    }
+
+    #[test]
+    fn clear_session_cookie_preserves_security_attributes() {
+        let auth = AuthService::new(AuthConfig {
+            session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            recent_mfa_ttl: Duration::from_secs(DEFAULT_RECENT_MFA_TTL_SECS),
+            secure_cookie: true,
+            require_step_up_mfa_for_terminal: true,
+            bootstrap_admin: false,
+            admin_email: "ignore@example.com".to_owned(),
+            admin_password: "ignore".to_owned(),
+        });
+
+        let cookie = auth.clear_session_cookie_header();
+
+        assert!(cookie.starts_with("sunbolt_session=;"));
+        assert!(cookie.contains("Max-Age=0"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Secure"));
+    }
+
+    #[test]
     fn role_checks_gate_terminal_access() {
         let config = AuthConfig {
             session_ttl: Duration::from_secs(DEFAULT_SESSION_TTL_SECS),

@@ -434,6 +434,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(AUTH_LOGIN_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({
@@ -506,6 +510,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(AUTH_LOGIN_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({
@@ -525,6 +533,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(AUTH_LOGOUT_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::COOKIE, cookie.as_str())
                     .body(Body::empty())
                     .expect("request should build"),
@@ -585,6 +597,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(AUTH_MFA_STEP_UP_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::COOKIE, cookie.as_str())
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
@@ -632,6 +648,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(ENROLLMENT_TOKENS_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from("{}"))
                     .expect("request should build"),
@@ -652,6 +672,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(ENROLLMENT_TOKENS_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::COOKIE, cookie.as_str())
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(json!({"expires_in_secs": 300}).to_string()))
@@ -824,6 +848,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(format!("{NODES_PATH}/{}/revoke", enrollment.node_id))
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::COOKIE, cookie.as_str())
                     .body(Body::empty())
                     .expect("request should build"),
@@ -872,6 +900,10 @@ mod tests {
                         "{NODES_PATH}/{}/credentials/rotate",
                         enrollment.node_id
                     ))
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::COOKIE, cookie.as_str())
                     .body(Body::empty())
                     .expect("request should build"),
@@ -953,6 +985,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(format!("{NODES_PATH}/{}/revoke", enrollment.node_id))
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::COOKIE, cookie.as_str())
                     .body(Body::empty())
                     .expect("request should build"),
@@ -1183,6 +1219,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(ENROLLMENT_TOKENS_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::COOKIE, cookie)
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(json!({"expires_in_secs": 300}).to_string()))
@@ -1274,6 +1314,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(AUTH_LOGIN_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({
@@ -1355,6 +1399,10 @@ mod tests {
             Request::builder()
                 .method(Method::POST)
                 .uri(AUTH_LOGIN_PATH)
+                .header(
+                    crate::security::CSRF_HEADER_NAME,
+                    crate::security::CSRF_HEADER_VALUE,
+                )
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     json!({"email": "admin@example.com", "password": "wrong"}).to_string(),
@@ -1415,8 +1463,36 @@ mod tests {
         assert_eq!(
             response.headers().get(header::ACCESS_CONTROL_ALLOW_HEADERS),
             Some(&header::HeaderValue::from_static(
-                "content-type, x-request-id"
+                "content-type, x-request-id, x-sunbolt-csrf"
             ))
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_post_routes_require_csrf_header() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(AUTH_LOGIN_PATH)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"email": "admin@example.com", "password": "admin-password"})
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 64)
+            .await
+            .expect("response body should be readable");
+        let payload: Value = serde_json::from_slice(&body).expect("body should parse");
+        assert_eq!(
+            payload.get("error").and_then(Value::as_str),
+            Some("csrf protection failed")
         );
     }
 
@@ -1470,12 +1546,34 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(AUTH_LOGIN_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .header("origin", "http://evil.example.com")
                     .body(Body::from(
                         json!({"email": "admin@example.com", "password": "admin-password"})
                             .to_string(),
                     ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_rejects_disallowed_origin_before_upgrade() {
+        let router = test_router_with_origins(vec!["https://control.example.com".to_owned()]);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(TERMINAL_WS_PATH)
+                    .header("origin", "https://evil.example.com")
+                    .body(Body::empty())
                     .expect("request should build"),
             )
             .await
@@ -1493,6 +1591,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(AUTH_LOGIN_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .header("origin", "http://localhost:3000")
                     .body(Body::from(
@@ -1577,6 +1679,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(AUTH_MFA_STEP_UP_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .header("origin", "http://localhost:8080")
                     .header(header::COOKIE, cookie.as_str())
@@ -1618,6 +1724,10 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri(AUTH_LOGIN_PATH)
+                    .header(
+                        crate::security::CSRF_HEADER_NAME,
+                        crate::security::CSRF_HEADER_VALUE,
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .header("origin", "http://127.0.0.1:8080")
                     .body(Body::from(

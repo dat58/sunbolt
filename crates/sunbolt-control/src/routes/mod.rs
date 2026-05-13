@@ -89,6 +89,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
     );
     let auth_layer = from_fn_with_state(state.auth.clone(), require_auth_middleware);
     let origin_layer = from_fn_with_state(state.allowed_origins.clone(), browser_origin_middleware);
+    let csrf_layer = from_fn(browser_csrf_middleware);
+    let security_headers_layer =
+        from_fn_with_state(state.allowed_origins.clone(), security_headers_middleware);
 
     Router::new()
         .route(HEALTH_PATH, get(health))
@@ -103,16 +106,25 @@ pub(crate) fn build_router(state: AppState) -> Router {
         )
         .route(
             TERMINAL_SESSION_TERMINATE_PATH,
-            post(terminate_terminal_session).layer(auth_layer.clone()),
+            post(terminate_terminal_session)
+                .layer(csrf_layer.clone())
+                .layer(auth_layer.clone()),
         )
-        .route(AUTH_LOGIN_PATH, post(auth::auth_login))
+        .route(
+            AUTH_LOGIN_PATH,
+            post(auth::auth_login).layer(csrf_layer.clone()),
+        )
         .route(
             AUTH_MFA_STEP_UP_PATH,
-            post(auth::auth_mfa_step_up).layer(auth_layer.clone()),
+            post(auth::auth_mfa_step_up)
+                .layer(csrf_layer.clone())
+                .layer(auth_layer.clone()),
         )
         .route(
             AUTH_LOGOUT_PATH,
-            post(auth::auth_logout).layer(auth_layer.clone()),
+            post(auth::auth_logout)
+                .layer(csrf_layer.clone())
+                .layer(auth_layer.clone()),
         )
         .route(AUTH_ME_PATH, get(auth::auth_me).layer(auth_layer.clone()))
         .route(
@@ -134,15 +146,21 @@ pub(crate) fn build_router(state: AppState) -> Router {
         )
         .route(
             NODE_CREDENTIAL_ROTATE_PATH,
-            post(node::rotate_node_credential).layer(auth_layer.clone()),
+            post(node::rotate_node_credential)
+                .layer(csrf_layer.clone())
+                .layer(auth_layer.clone()),
         )
         .route(
             NODE_REVOKE_PATH,
-            post(node::revoke_node).layer(auth_layer.clone()),
+            post(node::revoke_node)
+                .layer(csrf_layer.clone())
+                .layer(auth_layer.clone()),
         )
         .route(
             ENROLLMENT_TOKENS_PATH,
-            post(node::create_enrollment_token).layer(auth_layer),
+            post(node::create_enrollment_token)
+                .layer(csrf_layer)
+                .layer(auth_layer),
         )
         .route(AGENT_ENROLL_PATH, post(agent::agent_enroll))
         .route(AGENT_HEARTBEAT_PATH, post(agent::agent_heartbeat))
@@ -152,7 +170,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
             post(agent_transport_long_poll),
         )
         .layer(origin_layer)
-        .layer(from_fn(security_headers_middleware))
+        .layer(security_headers_layer)
         .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
         .layer(from_fn(request_id_middleware))
         .with_state(state)
@@ -176,13 +194,32 @@ struct HealthResponse {
     production_state: crate::state::StateSummary,
 }
 
-pub(crate) async fn security_headers_middleware(request: Request, next: Next) -> Response {
+pub(crate) async fn security_headers_middleware(
+    State(allowed_origins): State<Vec<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
+    let csp = security::content_security_policy(&allowed_origins);
     response.headers_mut().insert(
         HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static(security::CSP_HEADER_VALUE),
+        HeaderValue::from_str(&csp).expect("generated CSP should be a valid header value"),
     );
     response
+}
+
+pub(crate) async fn browser_csrf_middleware(request: Request, next: Next) -> Response {
+    if !security::has_valid_csrf_header(request.headers()) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "csrf protection failed",
+            }),
+        )
+            .into_response();
+    }
+
+    next.run(request).await
 }
 
 pub(crate) async fn browser_origin_middleware(
@@ -231,7 +268,7 @@ fn apply_cors_headers(headers: &mut HeaderMap, origin: &str) {
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("content-type, x-request-id"),
+        HeaderValue::from_static("content-type, x-request-id, x-sunbolt-csrf"),
     );
     headers.insert(
         HeaderName::from_static("access-control-expose-headers"),

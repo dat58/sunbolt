@@ -186,7 +186,19 @@ mod tests {
         assert!(script.contains(r#"fetch(httpEndpointUrl("/auth/me")"#));
         assert!(script.contains(r#"fetch(httpEndpointUrl("/auth/login")"#));
         assert!(script.contains("credentials: \"include\""));
+        assert!(script.contains("csrfHeaders"));
+        assert!(script.contains(r#""x-sunbolt-csrf": "1""#));
         assert!(script.contains("Sign in before opening a terminal."));
+    }
+
+    #[test]
+    fn terminal_bridge_does_not_store_auth_tokens_in_local_storage() {
+        let script = terminal_bridge_script();
+
+        assert!(!script.contains("localStorage"));
+        assert!(!script.contains("Authorization"));
+        assert!(script.contains("sessionStorage.setItem"));
+        assert!(script.contains("credentials: \"include\""));
     }
 
     #[test]
