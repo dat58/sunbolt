@@ -123,6 +123,23 @@ Transport logs should use `tracing` fields such as:
 
 Transport metrics should cover connection state, heartbeat latency, reconnect count, bytes in/out, queued messages, dropped messages, and backpressure events.
 
+## Release Validation
+
+Before a production release, validate the agent transport against the target
+network path:
+
+- Agent enrollment consumes a one-time token and persists durable identity material with owner-only file permissions.
+- The agent connects outbound to the control plane without inbound firewall access.
+- The baseline transport works over TLS/TCP/443.
+- The control plane authenticates node identity and rejects unknown, expired, invalid, or revoked credentials.
+- Heartbeats update liveness state and offline nodes are detected after timeout.
+- Duplicate node connections are handled deterministically.
+- Agent reconnect uses backoff and does not create unbounded queued messages.
+- Terminal command routing works over the selected transport.
+- Degraded long-poll transport, when used, is visible to operators and users.
+- QUIC, when enabled, falls back to TCP/443 if UDP/443 is blocked.
+- Transport negotiation, agent connected, agent disconnected, and authentication failure audit events are written.
+
 ## Current Development Path
 
 The current local agent flow still supports enrollment and heartbeat HTTP endpoints for development iteration.

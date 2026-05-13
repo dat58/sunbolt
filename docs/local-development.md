@@ -131,7 +131,8 @@ Storage variables are listed in `.env.example`. PostgreSQL is mandatory for prod
 - Full browser session reattach UI is still minimal.
 - Remote terminal reattach is not production-complete.
 - Some production-critical state still needs PostgreSQL-backed repositories.
-- The production agent transport abstraction and TLS/TCP/443 baseline are still planned work.
+- The production agent transport baseline still needs target-environment release validation for outbound TCP/443, reconnect, and degraded fallback behavior.
 - Mobile, tablet, laptop, and desktop layout contracts have static `cargo test`
   coverage for the required viewport sizes. Browser screenshot validation is
   still manual until end-to-end UI automation is added.
+- See [Known Limitations](known-limitations.md) for the release gate risk list.

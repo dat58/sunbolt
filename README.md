@@ -57,11 +57,13 @@ The Rust workspace separates core areas of responsibility:
 - [Production task list](TASK.md)
 - [Local development](docs/local-development.md)
 - [Deployment](docs/deployment.md)
+- [Backup and restore](docs/backup-restore.md)
 - [Security model](docs/security-model.md)
 - [Terminal lifecycle](docs/terminal-lifecycle.md)
 - [Agent transport](docs/agent-transport.md)
 - [UI architecture](docs/ui-architecture.md)
 - [Audit events](docs/audit-events.md)
+- [Known limitations](docs/known-limitations.md)
 
 ## Local Checks
 

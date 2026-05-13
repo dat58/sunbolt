@@ -476,6 +476,7 @@ Goal: define the checks required before treating a build as production-ready.
 - [~] Phase 8.10 is in progress as of 2026-05-13.
 - [~] 2026-05-13 continuation: repeat the local Rust release gate and record automated validation coverage.
 - [x] 2026-05-13 UI validation coverage recorded as `cargo test -p sunbolt-ui viewport_validation` artifacts.
+- [x] 2026-05-13 release documentation updated for deployment, backup and restore, security, transport, terminal lifecycle, and known limitations.
 
 ## Required Local Checks
 
@@ -519,12 +520,12 @@ Goal: define the checks required before treating a build as production-ready.
 
 ## Release Documentation
 
-- [ ] Update deployment runbook.
-- [ ] Update backup and restore documentation.
-- [ ] Update security documentation.
-- [ ] Update agent transport documentation.
-- [ ] Update terminal lifecycle documentation.
-- [ ] Update known limitations.
+- [x] Update deployment runbook.
+- [x] Update backup and restore documentation.
+- [x] Update security documentation.
+- [x] Update agent transport documentation.
+- [x] Update terminal lifecycle documentation.
+- [x] Update known limitations.
 
 ---
 
@@ -535,7 +536,8 @@ Add bugs here as they are discovered.
 - [ ] Remote terminal reattach is not production-complete.
 - [x] UI still needs production component/page split.
 - [ ] Some production-critical state is still in memory.
-- [ ] Agent-control-plane transport still needs production TCP/443 baseline.
+- [ ] Agent transport still needs target-environment release validation for outbound TCP/443, reconnect, and degraded fallback behavior.
+- [ ] Browser screenshot validation is still manual until end-to-end UI automation is added.
 
 ---
 

@@ -122,3 +122,18 @@ Browser navigation, page refresh, tab switch, route change, and short WebSocket 
 Do not log secrets. Redact tokens, credentials, recovery codes, passkey material, cookies, and opaque long-lived identifiers.
 
 Production secrets belong in a platform secret manager or restricted environment file. Do not commit production secrets.
+
+## Release Security Checks
+
+Before promoting a production release, verify:
+
+- `SUNBOLT_ENV=production` is set and startup validation passes.
+- Development bootstrap admin is disabled.
+- Browser origins are explicit HTTPS origins, not `*`.
+- Session cookies are `HttpOnly` and `Secure`.
+- State-changing HTTP routes enforce CSRF protection.
+- Terminal open, reattach, input, resize, detach, close, and terminate paths enforce server-side authorization.
+- Terminal open is compatible with the configured step-up MFA policy.
+- Revoked nodes cannot connect or continue terminal sessions.
+- Logs and audit events redact cookies, enrollment tokens, node credentials, recovery codes, and passkey material.
+- Audit writes succeed for login, MFA, terminal lifecycle, agent authentication failure, node enrollment, node revocation, credential rotation, and transport negotiation events.

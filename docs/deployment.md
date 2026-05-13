@@ -40,6 +40,25 @@ docker run --rm --env-file config/production.env -p 3000:3000 sunbolt:latest
 
 The image starts `sunbolt-control` by default and also includes the `sunbolt-agent` binary for managed-node deployments.
 
+## Production Release Runbook
+
+Use this runbook before promoting a build to production.
+
+1. Confirm the release candidate is built from the intended git commit and that no uncommitted files are included in the operator workspace.
+2. Review configuration against `config/production.env.example` and confirm `SUNBOLT_ENV=production`.
+3. Confirm PostgreSQL connectivity from the deployment environment with `psql "$SUNBOLT_DATABASE_URL" -c "select 1"`.
+4. Back up PostgreSQL before applying migrations or replacing a running release.
+5. Run pending migrations from a trusted operator workstation or one-off job.
+6. Start or roll the control plane behind the TLS-terminating reverse proxy.
+7. Verify `GET /health` returns HTTP 200.
+8. Verify browser HTTPS access, session cookie settings, WebSocket origin checks, and terminal WebSocket upgrade behavior.
+9. Verify at least one enrolled agent can connect outbound through TCP/443, heartbeat, and reconnect.
+10. Verify terminal open, input, output, resize, detach, reattach where supported, and terminate behavior.
+11. Verify audit events are written for login, MFA where applicable, terminal lifecycle, agent connection, transport negotiation, and node revocation actions.
+12. Review structured logs for request IDs, actor IDs or emails, node IDs, session IDs, and transport IDs.
+
+Do not promote the build if production startup validation fails, audit writes fail, PostgreSQL is unavailable, secure cookie configuration is unsafe, wildcard browser origins are configured, or development bootstrap admin is enabled.
+
 ## Production Configuration
 
 Start from `config/production.env.example` and set deployment-specific values:
@@ -117,7 +136,10 @@ Health checks confirm process availability. Production readiness also requires d
 
 ## Backup and Restore
 
-Back up PostgreSQL before upgrades and on a regular schedule:
+Back up PostgreSQL before upgrades and on a regular schedule. See
+[Backup and Restore](backup-restore.md) for the full operator procedure.
+
+Create a custom-format backup:
 
 ```bash
 pg_dump --format=custom --file=sunbolt-$(date +%Y%m%d%H%M%S).dump "$SUNBOLT_DATABASE_URL"
@@ -133,7 +155,8 @@ After restore, run audit chain verification before returning the instance to ser
 
 ## Release Gate
 
-Before treating a build as production-ready:
+Before treating a build as production-ready, complete the automated and manual
+release gate:
 
 - Run `cargo fmt --all -- --check`.
 - Run `cargo test`.
@@ -142,3 +165,4 @@ Before treating a build as production-ready:
 - Validate terminal open, detach, reattach, resize, and terminate behavior.
 - Validate agent enrollment, heartbeat, reconnect, and revocation behavior.
 - Validate UI behavior on mobile, tablet, laptop, and desktop viewports.
+- Review [Security Model](security-model.md), [Agent Transport](agent-transport.md), [Terminal Lifecycle](terminal-lifecycle.md), and [Known Limitations](known-limitations.md) for release-specific risks.

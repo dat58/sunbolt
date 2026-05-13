@@ -101,3 +101,17 @@ Production should enforce:
 - Absolute max duration.
 
 Limits must apply to detached sessions as well as actively attached sessions.
+
+## Release Validation
+
+Before a production release, validate terminal behavior in the target
+environment:
+
+- Opening a terminal requires authentication, authorization, optional step-up MFA, audit logging, lifecycle tracking, and durable metadata.
+- Input, output, resize, detach, reattach where supported, close UI tab, and explicit terminate actions behave distinctly.
+- Browser route changes, refreshes, and short WebSocket disconnects detach instead of killing the PTY where recovery is supported.
+- Reattach verifies user identity, workspace membership, permission, session ownership or delegated access, allowed lifecycle state, and node trust state.
+- Revoked nodes cannot open new terminals and cannot continue active terminal sessions.
+- Idle timeout, absolute max duration, per-user limits, and per-node limits apply to detached and active sessions.
+- Terminal output sequence numbers and replay buffers recover recent output where implemented.
+- Audit events are written for open, detach, reattach, terminate, close, failure, timeout, and revocation-driven closure.
