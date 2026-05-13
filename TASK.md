@@ -432,13 +432,13 @@ Goal: remove production shortcuts and enforce security policy.
 
 ## Runtime Mode Validation
 
-- [ ] Add explicit `SUNBOLT_ENV`.
-- [ ] Accept only `development` or `production`.
-- [ ] Fail production startup if required secrets are missing.
-- [ ] Fail production startup if development bootstrap admin is enabled.
-- [ ] Fail production startup if wildcard origins are configured.
-- [ ] Fail production startup if secure cookies are disabled.
-- [ ] Document production config requirements.
+- [x] Add explicit `SUNBOLT_ENV`.
+- [x] Accept only `development` or `production`.
+- [x] Fail production startup if required secrets are missing.
+- [x] Fail production startup if development bootstrap admin is enabled.
+- [x] Fail production startup if wildcard origins are configured.
+- [x] Fail production startup if secure cookies are disabled.
+- [x] Document production config requirements.
 
 ## Browser Security
 

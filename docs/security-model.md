@@ -20,9 +20,15 @@ Sunbolt has exactly two runtime modes:
 - `development`
 - `production`
 
+The control plane requires `SUNBOLT_ENV` at startup and accepts only
+`development` or `production`.
+
 Development mode may enable local bootstrap accounts, permissive local origins, and in-memory scaffolding.
 
 Production mode must not enable hidden default credentials, wildcard browser origins, plaintext node credentials, auth tokens in `localStorage`, or production source-of-truth state that only exists in memory.
+Production startup fails if required production configuration is missing, the
+development bootstrap admin is enabled, wildcard or empty browser origins are
+configured, or secure cookies are disabled.
 
 ## Authentication and Sessions
 

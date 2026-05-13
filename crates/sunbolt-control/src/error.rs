@@ -79,8 +79,14 @@ pub(crate) enum AgentTransportConnectionError {
 
 #[derive(Debug, Error)]
 pub enum StartupError {
+    #[error("startup requires {name} to be set")]
+    MissingRequiredEnv { name: &'static str },
     #[error("{0}")]
     InvalidRuntimeMode(String),
+    #[error("production startup requires {name} to be set")]
+    MissingProductionConfig { name: &'static str },
+    #[error("unsafe production configuration: {reason}")]
+    UnsafeProductionConfig { reason: &'static str },
     #[error("production startup requires durable storage: {0}")]
     MissingProductionStorage(#[source] StorageError),
     #[error("production storage is not reachable: {0}")]

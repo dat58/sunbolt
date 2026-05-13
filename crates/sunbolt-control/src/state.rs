@@ -6,9 +6,9 @@ use sunbolt_storage::{PostgresConfig, Storage, StorageError};
 use crate::{
     agent::AgentConnectionRegistry,
     config::{
-        allowed_origins_from_env, ProductionStateConfig, RuntimeMode, TerminalSessionConfig,
-        DEFAULT_LOGIN_RATE_MAX, DEFAULT_LOGIN_RATE_WINDOW, DEFAULT_TERMINAL_RATE_MAX,
-        DEFAULT_TERMINAL_RATE_WINDOW,
+        allowed_origins_from_env, validate_runtime_config_for_mode, ProductionStateConfig,
+        RuntimeMode, TerminalSessionConfig, DEFAULT_LOGIN_RATE_MAX, DEFAULT_LOGIN_RATE_WINDOW,
+        DEFAULT_TERMINAL_RATE_MAX, DEFAULT_TERMINAL_RATE_WINDOW,
     },
     error::StartupError,
     node::NodeEnrollmentRegistry,
@@ -42,13 +42,16 @@ pub(crate) struct ProductionState {
 impl AppState {
     pub(crate) async fn try_from_env() -> Result<Self, StartupError> {
         let runtime_mode = RuntimeMode::from_env()?;
+        let auth_config = AuthConfig::from_env();
+        let allowed_origins = allowed_origins_from_env();
+        validate_runtime_config_for_mode(runtime_mode, &auth_config, &allowed_origins, env_lookup)?;
         let production_state = ProductionState::from_mode(runtime_mode).await?;
-        let auth_config = auth_config_for_mode(runtime_mode);
 
         Ok(Self::new(
             runtime_mode,
             production_state,
-            AuthService::new(auth_config),
+            AuthService::new(auth_config_for_mode(runtime_mode, auth_config)),
+            allowed_origins,
         ))
     }
 
@@ -57,6 +60,7 @@ impl AppState {
             RuntimeMode::Development,
             ProductionState::development(),
             AuthService::from_env(),
+            allowed_origins_from_env(),
         )
     }
 
@@ -66,6 +70,7 @@ impl AppState {
             RuntimeMode::Development,
             ProductionState::development(),
             auth,
+            allowed_origins_from_env(),
         )
     }
 
@@ -73,6 +78,7 @@ impl AppState {
         runtime_mode: RuntimeMode,
         production_state: ProductionState,
         auth: AuthService,
+        allowed_origins: Vec<String>,
     ) -> Self {
         Self {
             runtime_mode,
@@ -92,7 +98,7 @@ impl AppState {
                 DEFAULT_TERMINAL_RATE_WINDOW,
                 DEFAULT_TERMINAL_RATE_MAX,
             ),
-            allowed_origins: allowed_origins_from_env(),
+            allowed_origins,
         }
     }
 
@@ -154,13 +160,16 @@ pub(crate) struct StateSummary {
     pub(crate) postgres_connected: bool,
 }
 
-fn auth_config_for_mode(mode: RuntimeMode) -> AuthConfig {
-    let mut config = AuthConfig::from_env();
+fn auth_config_for_mode(mode: RuntimeMode, config: AuthConfig) -> AuthConfig {
     if mode.is_production() {
-        config.bootstrap_admin = false;
-        config.secure_cookie = true;
+        debug_assert!(!config.bootstrap_admin);
+        debug_assert!(config.secure_cookie);
     }
     config
+}
+
+fn env_lookup(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 fn required_postgres_config_for_mode(
@@ -181,12 +190,23 @@ mod tests {
     use super::{
         auth_config_for_mode, required_postgres_config_for_mode, ProductionState, RuntimeMode,
     };
-    use sunbolt_auth::AuthService;
+    use sunbolt_auth::{AuthConfig, AuthService};
     use sunbolt_storage::{PostgresConfig, StorageError};
 
     #[test]
-    fn production_auth_config_disables_development_bootstrap_admin() {
-        let config = auth_config_for_mode(RuntimeMode::Production);
+    fn production_auth_config_preserves_valid_hardened_settings() {
+        let config = auth_config_for_mode(
+            RuntimeMode::Production,
+            AuthConfig {
+                session_ttl: std::time::Duration::from_secs(3600),
+                recent_mfa_ttl: std::time::Duration::from_secs(300),
+                secure_cookie: true,
+                require_step_up_mfa_for_terminal: true,
+                bootstrap_admin: false,
+                admin_email: "admin@example.com".to_owned(),
+                admin_password: "unused".to_owned(),
+            },
+        );
 
         assert!(!config.bootstrap_admin);
         assert!(config.secure_cookie);
@@ -194,7 +214,18 @@ mod tests {
 
     #[test]
     fn production_auth_service_does_not_accept_development_bootstrap_admin() {
-        let auth = AuthService::new(auth_config_for_mode(RuntimeMode::Production));
+        let auth = AuthService::new(auth_config_for_mode(
+            RuntimeMode::Production,
+            AuthConfig {
+                session_ttl: std::time::Duration::from_secs(3600),
+                recent_mfa_ttl: std::time::Duration::from_secs(300),
+                secure_cookie: true,
+                require_step_up_mfa_for_terminal: true,
+                bootstrap_admin: false,
+                admin_email: "admin@sunbolt.local".to_owned(),
+                admin_password: "sunbolt-dev-admin".to_owned(),
+            },
+        ));
 
         assert!(auth
             .login("admin@sunbolt.local", "sunbolt-dev-admin")

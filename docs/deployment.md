@@ -15,6 +15,9 @@ Sunbolt has exactly two runtime modes:
 - `development`
 - `production`
 
+`SUNBOLT_ENV` is required at startup and must be set to exactly one of these
+two values. Missing, empty, or unknown runtime modes fail startup.
+
 Use `development` for local operator work, temporary in-memory scaffolding, local bootstrap credentials, and permissive local origins.
 
 Use `production` for any deployment that protects real systems or real user accounts. Production mode must reject development-only shortcuts.
@@ -50,7 +53,7 @@ Start from `config/production.env.example` and set deployment-specific values:
 - `SUNBOLT_REQUIRE_TERMINAL_STEP_UP_MFA=true` unless an approved policy says otherwise.
 - Terminal session limits and timeouts are sized for the deployment.
 
-Production startup should fail clearly when required durable storage, public URL, cookie security, allowed origins, or secrets are missing or unsafe.
+Production startup fails clearly when required durable storage, `SUNBOLT_DATABASE_URL`, `SUNBOLT_PUBLIC_URL`, secure cookies, explicit browser origins, or development bootstrap settings are missing or unsafe.
 
 Keep production secrets out of git. Inject them through the platform secret manager or an environment file with restricted filesystem permissions.
 

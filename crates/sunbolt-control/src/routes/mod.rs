@@ -56,7 +56,7 @@ pub(crate) const NODE_REVOKE_PATH: &str = "/nodes/{node_id}/revoke";
 ///
 /// # Panics
 ///
-/// Panics when `SUNBOLT_ENV=production` or when `SUNBOLT_ENV` is invalid.
+/// Panics when `SUNBOLT_ENV` is missing, set to `production`, or invalid.
 /// Production startup must use [`try_router`] so durable storage can be
 /// validated asynchronously before routes are served.
 pub fn router() -> Router {
