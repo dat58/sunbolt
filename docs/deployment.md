@@ -40,6 +40,31 @@ docker run --rm --env-file config/production.env -p 3000:3000 sunbolt:latest
 
 The image starts `sunbolt-control` by default and also includes the `sunbolt-agent` binary for managed-node deployments.
 
+The Makefile provides an assisted single-host Docker deployment path:
+
+```bash
+make prod-env-init
+$EDITOR config/production.env
+make deploy
+```
+
+`make deploy` runs the local Rust release gate, builds the Docker image, checks
+PostgreSQL connectivity, creates a backup, runs migrations, replaces the
+configured Docker container, and checks health. Override defaults when needed:
+
+```bash
+make deploy \
+  PRODUCTION_ENV_FILE=config/production.env \
+  IMAGE=registry.example.com/sunbolt:2026-05-13 \
+  CONTAINER_NAME=sunbolt-control \
+  HOST_PORT=3000 \
+  HEALTH_URL=https://sunbolt.example.com/health
+```
+
+For larger deployments, use the individual targets as release-runbook steps:
+`make release-checks`, `make docker-build`, `make db-check`, `make db-backup`,
+`make db-migrate`, `make docker-restart`, and `make health`.
+
 ## Production Release Runbook
 
 Use this runbook before promoting a build to production.

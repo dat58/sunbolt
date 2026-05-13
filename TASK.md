@@ -477,6 +477,7 @@ Goal: define the checks required before treating a build as production-ready.
 - [~] 2026-05-13 continuation: repeat the local Rust release gate and record automated validation coverage.
 - [x] 2026-05-13 UI validation coverage recorded as `cargo test -p sunbolt-ui viewport_validation` artifacts.
 - [x] 2026-05-13 release documentation updated for deployment, backup and restore, security, transport, terminal lifecycle, and known limitations.
+- [x] 2026-05-13 Makefile deployment targets added for release checks, Docker build/run, database validation, backup, migration, and health checks.
 
 ## Required Local Checks
 
